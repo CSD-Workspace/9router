@@ -976,6 +976,22 @@ case "llm7": {
           error: valid ? null : (res.status === 401 || res.status === 403 ? "Invalid API key" : `AgentRouter error (${res.status})`),
         };
       }
+      case "seekai":
+      case "ska": {
+        const baseUrl = connection.providerSpecificData?.baseUrl || "https://seekai.cc/v1";
+        const modelsUrl = `${baseUrl.replace(/\/+$/, "")}/models`;
+        const res = await fetchWithConnectionProxy(modelsUrl, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${connection.apiKey}`,
+          },
+        }, effectiveProxy);
+        const valid = res.ok;
+        return {
+          valid,
+          error: valid ? null : (res.status === 401 || res.status === 403 ? "Invalid API key" : `SeekAi error (${res.status})`),
+        };
+      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }

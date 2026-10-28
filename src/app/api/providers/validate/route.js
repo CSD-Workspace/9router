@@ -402,6 +402,7 @@ export async function POST(request) {
         case "runcrate":
         case "xiaomi-mimo":
         case "xiaomi-tokenplan":
+        case "seekai":
         case "nvidia": {
           const endpoints = {
             ...Object.fromEntries(
