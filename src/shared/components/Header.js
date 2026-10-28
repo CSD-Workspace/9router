@@ -169,6 +169,13 @@ const getPageInfo = (pathname) => {
       icon: "monitor",
       breadcrumbs: [],
     };
+  if (pathname.includes("/request-logs"))
+    return {
+      title: "Request Logs",
+      description: "Live per-request lifecycle, payloads and token stats",
+      icon: "receipt_long",
+      breadcrumbs: [],
+    };
   if (pathname === "/dashboard")
     return {
       title: "Endpoint",

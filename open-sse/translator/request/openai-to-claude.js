@@ -317,6 +317,17 @@ function getContentBlocksFromMessage(msg, toolNameMap = new Map()) {
         }
       }
     }
+
+    // OpenAI-style `reasoning_content` (DeepSeek, Kimi) is the counterpart of a
+    // Claude `thinking` block. Dropping it breaks thinking-mode upstreams, which
+    // reject the turn outright: "The `content[].thinking` in the thinking mode
+    // must be passed back to the API." DeepSeek's Claude transport does not
+    // validate a signature, so the block goes in unsigned. Thinking must lead
+    // the assistant's blocks.
+    const reasoning = typeof msg.reasoning_content === "string" ? msg.reasoning_content.trim() : "";
+    if (reasoning && !blocks.some(b => b.type === CLAUDE_BLOCK.THINKING)) {
+      blocks.unshift({ type: CLAUDE_BLOCK.THINKING, thinking: reasoning });
+    }
   }
 
   return blocks;

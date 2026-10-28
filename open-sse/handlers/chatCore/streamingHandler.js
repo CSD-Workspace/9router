@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
+import { createThinkingStripperTransformStream } from "../../utils/thinkstrip.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -99,11 +100,30 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
 
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
+    startedAt: new Date(requestStartTime).toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: Date.now() - requestStartTime,
     latency: { ttft: 0, total: Date.now() - requestStartTime },
     tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    clientRawRequest: clientRawRequest || null,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,
-    providerResponse: "[Streaming - raw response not captured]",
+    providerResponse: {
+      _streamed: true,
+      _format: "sse-json",
+      _stage: "provider_response",
+      summary: {
+        object: "chat.completion",
+        choices: [
+          {
+            message: { role: "assistant", content: "[Streaming in progress...]" },
+            finish_reason: null
+          }
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 0 },
+        _streamed: true
+      }
+    },
     response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
     pxpipe,
     status: "success"
@@ -111,9 +131,14 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     console.error("[RequestDetail] Failed to save streaming request:", err.message);
   });
 
+  const shouldStripThinking = (provider === "agentrouter" || provider === "ar") && sourceFormat === FORMATS.OPENAI;
+  const finalStream = shouldStripThinking
+    ? transformedBody.pipeThrough(createThinkingStripperTransformStream())
+    : transformedBody;
+
   return {
     success: true,
-    response: new Response(transformedBody, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
+    response: new Response(finalStream, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
   };
 }
 
@@ -128,16 +153,51 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    const toolCalls = contentObj?.toolCalls?.length
+      ? contentObj.toolCalls.map((c, i) => ({
+          id: c.id || `call_${i}`,
+          type: "function",
+          function: { name: c.name || "", arguments: c.arguments || "" }
+        }))
+      : null;
+    // Fall back to a readable tool-call summary when there is no text content
+    // (tool-call-only responses) so the log never shows just a placeholder.
+    const safeContent = contentObj?.content
+      || (toolCalls ? toolCalls.map((c) => `[tool_call] ${c.function.name}(${c.function.arguments})`).join("\n") : "")
+      || "[Empty streaming response]";
 
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId,
+      startedAt: new Date(requestStartTime).toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: latency.total,
       latency,
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
+      clientRawRequest: clientRawRequest || null,
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
+      providerResponse: {
+        _streamed: true,
+        _format: "sse-json",
+        _stage: "provider_response",
+        summary: {
+          object: "chat.completion",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: safeContent,
+                ...(safeThinking ? { reasoning_content: safeThinking } : {}),
+                ...(toolCalls ? { tool_calls: toolCalls } : {})
+              },
+              finish_reason: "stop"
+            }
+          ],
+          usage: usage || { prompt_tokens: 0, completion_tokens: 0 },
+          _streamed: true
+        }
+      },
       response: { content: safeContent, thinking: safeThinking, type: "streaming" },
       pxpipe,
       status: "success"

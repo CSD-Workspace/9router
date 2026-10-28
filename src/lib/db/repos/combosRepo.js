@@ -2,13 +2,30 @@ import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 
+// Legacy combos stored models as objects — {model, providerId, ...} for a model
+// entry, or {kind:"combo-ref", comboName} for a nested combo reference. Routing,
+// capabilities and the dashboard all treat combo.models as string[], so unwrap
+// on read rather than migrating every row.
+function normalizeModel(m) {
+  if (typeof m === "string") return m;
+  if (!m || typeof m !== "object") return null;
+  if (typeof m.model === "string") return m.model;
+  if (typeof m.comboName === "string") return m.comboName;
+  if (typeof m.id === "string") return m.id;
+  return null;
+}
+
+function normalizeModels(raw) {
+  return (Array.isArray(raw) ? raw : []).map(normalizeModel).filter(Boolean);
+}
+
 function rowToCombo(row) {
   if (!row) return null;
   return {
     id: row.id,
     name: row.name,
     kind: row.kind,
-    models: parseJson(row.models, []),
+    models: normalizeModels(parseJson(row.models, [])),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

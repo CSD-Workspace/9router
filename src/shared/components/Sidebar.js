@@ -31,6 +31,7 @@ const navItems = [
 
 const debugItems = [
   { href: "/dashboard/console-log", label: "Console Log", icon: "terminal" },
+  { href: "/dashboard/request-logs", label: "Request Logs", icon: "list_alt" },
   { href: "/dashboard/translator", label: "Translator", icon: "translate" },
 ];
 
@@ -312,7 +313,8 @@ export default function Sidebar({ onClose }) {
               </span>
             </a>
 
-            {/* 9English */}
+            {/*
+            {/ 9English /}
             <a
               href="https://9english.net/"
               target="_blank"
@@ -328,6 +330,7 @@ export default function Sidebar({ onClose }) {
               </span>
               <span className="text-[13px] font-medium">9English</span>
             </a>
+            */}
 
             {/* Settings */}
             <Link

@@ -117,6 +117,72 @@ export default function RequestDetailsTab() {
     startDate: "",
     endDate: ""
   });
+  const [stats, setStats] = useState({ total: 0, oldest: null, newest: null });
+  const [retentionDays, setRetentionDays] = useState(0);
+  const [savingRetention, setSavingRetention] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearResult, setClearResult] = useState(null);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/usage/request-details?stats=1");
+      if (res.ok) {
+        const data = await res.json();
+        setStats(data);
+      }
+    } catch {}
+  }, []);
+
+  const fetchRetention = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const data = await res.json();
+        setRetentionDays(data.requestLogsRetentionDays ?? 0);
+      }
+    } catch {}
+  }, []);
+
+  const handleRetentionChange = async (value) => {
+    setSavingRetention(true);
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestLogsRetentionDays: Number(value) }),
+      });
+      setRetentionDays(Number(value));
+    } catch (e) {
+      console.error("Failed to save retention setting:", e);
+    } finally {
+      setSavingRetention(false);
+    }
+  };
+
+  const handleClearAll = async () => {
+    setClearing(true);
+    setClearResult(null);
+    try {
+      const res = await fetch("/api/usage/request-details", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "all" }),
+      });
+      const data = await res.json();
+      setClearResult(data);
+      if (data.success) {
+        await fetchStats();
+        fetchDetails();
+        setShowClearConfirm(false);
+        setTimeout(() => setClearResult(null), 4000);
+      }
+    } catch (e) {
+      setClearResult({ error: "Failed to clear" });
+    } finally {
+      setClearing(false);
+    }
+  };
 
   const fetchProviders = useCallback(async () => {
     try {
@@ -155,8 +221,13 @@ export default function RequestDetailsTab() {
   }, [pagination.page, pagination.pageSize, filters]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchProviders();
-  }, [fetchProviders]);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchStats();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchRetention();
+  }, [fetchProviders, fetchStats, fetchRetention]);
 
   useEffect(() => {
     fetchDetails();
@@ -247,6 +318,83 @@ export default function RequestDetailsTab() {
         </div>
       </Card>
 
+      {/* Stats bar + retention + clear */}
+      <Card padding="md">
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-3 text-sm text-text-muted mr-auto">
+            <span className="material-symbols-outlined text-[18px]">database</span>
+            <span>
+              <span className="font-semibold text-text-main">{stats.total.toLocaleString()}</span> record{stats.total !== 1 ? "s" : ""} stored
+            </span>
+            {stats.oldest && (
+              <span className="hidden sm:inline">
+                · oldest <span className="font-mono text-text-main">{new Date(stats.oldest).toLocaleDateString()}</span>
+              </span>
+            )}
+            {clearResult?.success && (
+              <span className="text-green-600 font-medium ml-2">
+                ✓ Cleared {clearResult.deleted} record{clearResult.deleted !== 1 ? "s" : ""}
+              </span>
+            )}
+            {clearResult?.error && (
+              <span className="text-red-600 font-medium ml-2">✗ {clearResult.error}</span>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="retention-select" className="text-sm text-text-muted whitespace-nowrap">Auto-clear:</label>
+            <select
+              id="retention-select"
+              value={retentionDays}
+              onChange={(e) => handleRetentionChange(e.target.value)}
+              disabled={savingRetention}
+              className={cn(
+                "h-8 px-2 rounded-lg border border-black/10 dark:border-white/10 bg-surface",
+                "text-sm text-text-main focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-pointer"
+              )}
+              style={{ colorScheme: 'auto' }}
+            >
+              <option value={0}>Never</option>
+              <option value={1}>After 1 day</option>
+              <option value={3}>After 3 days</option>
+              <option value={7}>After 7 days</option>
+              <option value={30}>After 30 days</option>
+            </select>
+            {savingRetention && <span className="material-symbols-outlined animate-spin text-[16px] text-text-muted">progress_activity</span>}
+          </div>
+
+          {stats.total > 0 && !showClearConfirm && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowClearConfirm(true)}
+              className="text-red-500 border-red-200 hover:border-red-400 hover:bg-red-50 dark:hover:bg-red-950/20"
+            >
+              <span className="material-symbols-outlined text-[16px] mr-1">delete</span>
+              Clear All
+            </Button>
+          )}
+
+          {showClearConfirm && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-red-500">Delete all {stats.total.toLocaleString()} records?</span>
+              <Button
+                variant="solid"
+                size="sm"
+                onClick={handleClearAll}
+                disabled={clearing}
+                className="bg-red-500 hover:bg-red-600 text-white"
+              >
+                {clearing ? "Clearing…" : "Confirm"}
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setShowClearConfirm(false)} disabled={clearing}>
+                Cancel
+              </Button>
+            </div>
+          )}
+        </div>
+      </Card>
+
       <Card padding="none">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[880px]">
@@ -266,7 +414,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="9" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Loading...
@@ -275,7 +423,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-text-muted">
+                  <td colSpan="9" className="p-8 text-center text-text-muted">
                     No request details found
                   </td>
                 </tr>

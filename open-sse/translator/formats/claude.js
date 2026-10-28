@@ -600,8 +600,11 @@ export function prepareClaudeRequest(body, provider = null, apiKey = null, conne
     // they get the identical keep/placeholder handling below.
     const deepSeekServed =
       provider === "deepseek" ||
-      (provider === "opencode-go" && isDeepSeekModel(body?.model));
-
+      (provider === "opencode-go" && isDeepSeekModel(body?.model)) ||
+      (
+        provider?.startsWith("anthropic-compatible-") &&
+        isDeepSeekModel(body?.model)
+      );
     // Pass 2 (reverse): add cache_control to last assistant + handle thinking for Anthropic
     let lastAssistantProcessed = false;
     for (let i = filtered.length - 1; i >= 0; i--) {

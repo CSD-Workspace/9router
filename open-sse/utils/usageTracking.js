@@ -263,8 +263,9 @@ export function extractUsage(chunk) {
   }
 
   // OpenAI Responses API format (response.completed or response.done)
-  if ((chunk.type === "response.completed" || chunk.type === "response.done") && chunk.response?.usage && typeof chunk.response.usage === "object") {
-    const usage = chunk.response.usage;
+  const respUsage = chunk.response?.usage || (typeof chunk.type === "string" && chunk.type.startsWith("response.") ? chunk.usage : null);
+  if ((chunk.type === "response.completed" || chunk.type === "response.done") && respUsage && typeof respUsage === "object") {
+    const usage = respUsage;
     const cachedTokens = usage.input_tokens_details?.cached_tokens;
     return normalizeUsage({
       prompt_tokens: usage.input_tokens || usage.prompt_tokens || 0,

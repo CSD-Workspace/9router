@@ -682,7 +682,12 @@ export const PATTERN_CAPABILITIES = [
  */
 export function aggregateComboCapabilities(comboModels, comboLookup = null, resolveCaps = null, _depth = 0) {
   if (!comboModels?.length || _depth > 6) return null;
-  const allCaps = comboModels.map((fullId) => {
+  // Legacy combos may still carry object entries; drop them rather than crash
+  // on fullId.includes. (Combos repo normalizes on read; this guards callers
+  // that pass raw stored values.)
+  const ids = comboModels.filter((m) => typeof m === "string");
+  if (!ids.length) return null;
+  const allCaps = ids.map((fullId) => {
     // Nested combo: bare name (no slash) that exists in the lookup — recurse
     if (!fullId.includes("/") && comboLookup?.[fullId]) {
       return aggregateComboCapabilities(comboLookup[fullId], comboLookup, resolveCaps, _depth + 1)

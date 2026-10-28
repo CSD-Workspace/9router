@@ -85,8 +85,15 @@ export function buildRequestDetail(base, overrides = {}) {
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
     timestamp: new Date().toISOString(),
+    startedAt: base.startedAt || new Date().toISOString(),
+    endedAt: base.endedAt || new Date().toISOString(),
+    durationMs: base.durationMs ?? null,
+    requestedModel: base.requestedModel || null,
     latency: base.latency || { ttft: 0, total: 0 },
     tokens: base.tokens || { prompt_tokens: 0, completion_tokens: 0 },
+    // clientRawRequest: full original request from the client (endpoint, headers, body)
+    clientRawRequest: base.clientRawRequest || null,
+    // request: processed/translated request body sent to provider
     request: base.request,
     providerRequest: base.providerRequest || null,
     providerResponse: base.providerResponse || null,

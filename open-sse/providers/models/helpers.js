@@ -64,3 +64,16 @@ export function opencodeFamilyFormats(modelId) {
   const base = modelId.replace(/\([^()]+\)\s*$/, "").trim();
   return OPENCODE_FAMILIES.find((f) => f.match.test(base)) || null;
 }
+
+const AGENTROUTER_FAMILIES = [
+  { match: /^claude-/i, supportedFormats: [FORMATS.CLAUDE], targetFormat: FORMATS.CLAUDE },
+  { match: /^(gpt-[56]|.*-codex|codex|grok-build|muse[-_]?spark)/i, supportedFormats: [FORMATS.OPENAI_RESPONSES], targetFormat: FORMATS.OPENAI_RESPONSES },
+  { match: /^(deepseek|glm|gpt|qwen|kimi|moonshot|minimax)/i, supportedFormats: [FORMATS.OPENAI], targetFormat: FORMATS.OPENAI },
+];
+
+export function agentrouterFamilyFormats(modelId) {
+  if (!modelId || typeof modelId !== "string") return null;
+  const clean = modelId.replace(/\([^()]+\)\s*$/, "").trim();
+  const base = clean.includes("/") ? clean.split("/").pop() : clean;
+  return AGENTROUTER_FAMILIES.find((f) => f.match.test(base)) || null;
+}

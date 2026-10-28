@@ -101,6 +101,7 @@ async function flushToDatabase() {
           if (!item.id) item.id = generateDetailId(item.model);
           if (!item.timestamp) item.timestamp = new Date().toISOString();
           if (item.request?.headers) item.request.headers = sanitizeHeaders(item.request.headers);
+          if (item.clientRawRequest?.headers) item.clientRawRequest = { ...item.clientRawRequest, headers: sanitizeHeaders(item.clientRawRequest.headers) };
 
           const record = {
             id: item.id,
@@ -108,9 +109,14 @@ async function flushToDatabase() {
             model: item.model || null,
             connectionId: item.connectionId || null,
             timestamp: item.timestamp,
+            startedAt: item.startedAt || item.timestamp,
+            endedAt: item.endedAt || null,
+            durationMs: item.durationMs ?? null,
+            requestedModel: item.requestedModel || null,
             status: item.status || null,
             latency: item.latency || {},
             tokens: item.tokens || {},
+            clientRawRequest: truncateField(item.clientRawRequest, config.maxJsonSize),
             request: truncateField(item.request, config.maxJsonSize),
             providerRequest: truncateField(item.providerRequest, config.maxJsonSize),
             providerResponse: truncateField(item.providerResponse, config.maxJsonSize),
@@ -181,10 +187,10 @@ export async function getRequestDetails(filter = {}) {
   const offset = (page - 1) * pageSize;
 
   const rows = db.all(
-    `SELECT data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+    `SELECT id, data FROM requestDetails ${where} ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
     [...params, pageSize, offset]
   );
-  const details = rows.map((r) => parseJson(r.data, {}));
+  const details = rows.map((r) => ({ ...parseJson(r.data, {}), id: r.id }));
 
   return {
     details,
@@ -198,10 +204,22 @@ export async function getDistinctProviders() {
   return rows.map((r) => r.provider);
 }
 
+export async function getDistinctModels() {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT DISTINCT model FROM requestDetails WHERE model IS NOT NULL ORDER BY model ASC`);
+  return rows.map((r) => r.model);
+}
+
+export async function getDistinctStatuses() {
+  const db = await getAdapter();
+  const rows = db.all(`SELECT DISTINCT status FROM requestDetails WHERE status IS NOT NULL ORDER BY status ASC`);
+  return rows.map((r) => r.status);
+}
+
 export async function getRequestDetailById(id) {
   const db = await getAdapter();
-  const row = db.get(`SELECT data FROM requestDetails WHERE id = ?`, [id]);
-  return row ? parseJson(row.data, null) : null;
+  const row = db.get(`SELECT id, data FROM requestDetails WHERE id = ?`, [id]);
+  return row ? { ...parseJson(row.data, null), id: row.id } : null;
 }
 
 const _shutdownHandler = async () => {
@@ -222,3 +240,78 @@ function ensureShutdownHandler() {
 }
 
 ensureShutdownHandler();
+
+// --- Auto-cleanup & manual clear ---
+
+let cleanupTimer = null;
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+
+export async function getRequestDetailsStats() {
+  const db = await getAdapter();
+  const row = db.get(`SELECT COUNT(*) as total, MIN(timestamp) as oldest, MAX(timestamp) as newest FROM requestDetails`);
+  return {
+    total: row?.total ?? 0,
+    oldest: row?.oldest ?? null,
+    newest: row?.newest ?? null,
+  };
+}
+
+export async function deleteRequestDetailsBefore(cutoffDate) {
+  const db = await getAdapter();
+  const cutoff = new Date(cutoffDate).toISOString();
+  const before = db.get(`SELECT COUNT(*) as c FROM requestDetails WHERE timestamp < ?`, [cutoff]);
+  const deletedCount = before?.c ?? 0;
+  if (deletedCount > 0) {
+    db.run(`DELETE FROM requestDetails WHERE timestamp < ?`, [cutoff]);
+  }
+  return deletedCount;
+}
+
+export async function clearRequestDetails() {
+  const db = await getAdapter();
+  const before = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
+  const deletedCount = before?.c ?? 0;
+  if (deletedCount > 0) {
+    db.run(`DELETE FROM requestDetails`);
+  }
+  return deletedCount;
+}
+
+async function runCleanup() {
+  try {
+    const { getSettings } = await import("./settingsRepo.js");
+    const settings = await getSettings();
+    const retentionDays = settings.requestLogsRetentionDays ?? 0;
+    if (retentionDays > 0) {
+      const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+      const deleted = await deleteRequestDetailsBefore(cutoff);
+      if (deleted > 0) {
+        console.log(`[requestDetailsRepo] Auto-cleared ${deleted} request logs older than ${retentionDays} days`);
+      }
+    }
+  } catch (e) {
+    console.warn("[requestDetailsRepo] Auto-cleanup failed:", e.message);
+  }
+}
+
+let cleanupScheduled = false;
+function scheduleCleanup() {
+  if (cleanupScheduled) return;
+  cleanupScheduled = true;
+  runCleanup().catch(() => {});
+  cleanupTimer = setInterval(() => {
+    runCleanup().catch(() => {});
+  }, CLEANUP_INTERVAL_MS);
+}
+
+function clearScheduledCleanup() {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer);
+    cleanupTimer = null;
+  }
+  cleanupScheduled = false;
+}
+
+// Run cleanup on startup, then schedule periodic
+runCleanup().catch(() => {});
+scheduleCleanup();

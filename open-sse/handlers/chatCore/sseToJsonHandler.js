@@ -195,6 +195,10 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
   const ctx = {
     provider, model, connectionId,
+    startedAt: new Date(requestStartTime).toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: Date.now() - requestStartTime,
+    clientRawRequest: clientRawRequest || null,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null
   };

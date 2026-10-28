@@ -13,6 +13,7 @@ import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { stripThinkingNonStreaming } from "../../utils/thinkstrip.js";
 
 /**
  * Convert an OpenAI Chat Completions non-streaming response body into the
@@ -331,16 +332,25 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       if (choice?.message?.reasoning_content && choice.message.content) {
         delete choice.message.reasoning_content;
       }
+      if ((provider === "agentrouter" || provider === "ar") && typeof choice?.message?.content === "string") {
+        choice.message.content = stripThinkingNonStreaming(choice.message.content);
+      }
     }
   }
 
   reqLogger.logConvertedResponse(translatedResponse);
 
   const totalLatency = Date.now() - requestStartTime;
+  const endedAtIso = new Date().toISOString();
+  const startedAtIso = new Date(requestStartTime).toISOString();
   saveRequestDetail(buildRequestDetail({
     provider, model, connectionId,
+    startedAt: startedAtIso,
+    endedAt: endedAtIso,
+    durationMs: totalLatency,
     latency: { ttft: totalLatency, total: totalLatency },
     tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
+    clientRawRequest: clientRawRequest || null,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,
     providerResponse: responseBody || null,

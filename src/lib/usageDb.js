@@ -4,4 +4,6 @@ export {
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs,
   saveRequestDetail, getRequestDetails, getRequestDetailById,
+  getDistinctProviders, getDistinctModels, getDistinctStatuses,
+  getRequestDetailsStats, clearRequestDetails, deleteRequestDetailsBefore,
 } from "@/lib/db/index.js";

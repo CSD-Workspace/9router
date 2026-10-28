@@ -2,12 +2,13 @@ import REGISTRY from "../providers/registry/index.js";
 // PROVIDER_MODELS now built from providers/registry (transport + models co-located)
 import { PROVIDER_MODELS } from "../providers/index.js";
 import { modelQuotaFamily, modelStrip, modelTargetFormat, modelSupportedFormats, normalizeModelId } from "../providers/models/schema.js";
-import { CODEX_REVIEW_SUFFIX, isMuseSparkModel, opencodeFamilyFormats } from "../providers/models/helpers.js";
+import { CODEX_REVIEW_SUFFIX, isMuseSparkModel, opencodeFamilyFormats, agentrouterFamilyFormats } from "../providers/models/helpers.js";
 import { FORMATS } from "../translator/formats.js";
 export { PROVIDER_MODELS };
 
 // OpenCode providers sharing the endpoint-family fallback for unknown model ids
 const isOpenCodeAlias = (aliasOrId) => !aliasOrId || ["oc", "opencode", "ocg", "opencode-go", "ocz", "opencode-zen"].includes(aliasOrId);
+const isAgentRouterAlias = (aliasOrId) => ["agentrouter", "ar", "agent-router"].includes(aliasOrId);
 
 
 // Helper functions
@@ -64,6 +65,7 @@ export function getModelTargetFormat(aliasOrId, modelId) {
   if (found) return modelTargetFormat(found);
   // Family fallback keeps modelsFetcher/passthrough ids on their endpoint lane
   if (isOpenCodeAlias(aliasOrId)) return opencodeFamilyFormats(modelId)?.targetFormat || null;
+  if (isAgentRouterAlias(aliasOrId)) return agentrouterFamilyFormats(modelId)?.targetFormat || null;
   return null;
 }
 
@@ -77,6 +79,7 @@ export function getModelSupportedFormats(aliasOrId, modelId) {
   const found = findModel(models, modelId, aliasOrId);
   if (found) return modelSupportedFormats(found);
   if (isOpenCodeAlias(aliasOrId)) return opencodeFamilyFormats(modelId)?.supportedFormats || [FORMATS.OPENAI];
+  if (isAgentRouterAlias(aliasOrId)) return agentrouterFamilyFormats(modelId)?.supportedFormats || [FORMATS.OPENAI];
   return null;
 }
 
