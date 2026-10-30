@@ -3,6 +3,7 @@ import { getAgentRouterHeaders, normalizeProfile } from "../providers/agentroute
 import { globalWafStore, isWafBlock } from "../providers/agentrouterWaf.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { openaiToOpenAIResponsesRequest } from "../translator/request/openai-responses.js";
+import { normalizeResponsesTools } from "../translator/formats/responsesApi.js";
 import { openaiResponsesToOpenAIResponse } from "../translator/response/openai-responses.js";
 import { initState } from "../translator/index.js";
 import { parseSSELine, formatSSE } from "../utils/streamHelpers.js";
@@ -86,24 +87,31 @@ export class AgentRouterExecutor extends DefaultExecutor {
       }
     }
 
-    // AgentRouter upstream uses Rust serde for tool calls, requiring type: "function"
+    // Handle tool normalization based on endpoint / model family
     if (Array.isArray(transformed.tools)) {
-      transformed.tools = transformed.tools
-        .map((tool) => {
-          if (!tool || typeof tool !== "object") return null;
-          const fn = tool.function || tool;
-          const name = tool.name || fn.name;
-          if (!name) return null;
-          return {
-            type: "function",
-            function: {
-              name,
-              description: fn.description || "",
-              parameters: fn.parameters || { type: "object", properties: {} },
-            },
-          };
-        })
-        .filter(Boolean);
+      if (this.isResponsesModel(model) || transformed.input) {
+        // Responses API endpoint (/v1/responses) requires flat tool schema: { type: "function", name, parameters }
+        transformed.tools = normalizeResponsesTools(transformed.tools);
+      } else if (!this.isClaudeModel(model)) {
+        // Chat Completions format: AgentRouter upstream uses Rust serde for tool calls, requiring type: "function"
+        transformed.tools = transformed.tools
+          .map((tool) => {
+            if (!tool || typeof tool !== "object" || Array.isArray(tool)) return null;
+            const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : tool;
+            const rawName = tool.name || fn.name;
+            const name = typeof rawName === "string" ? rawName.trim() : "";
+            if (!name) return null;
+            return {
+              type: "function",
+              function: {
+                name: name.slice(0, 128),
+                description: fn.description || tool.description || "",
+                parameters: fn.parameters || tool.parameters || { type: "object", properties: {} },
+              },
+            };
+          })
+          .filter(Boolean);
+      }
     }
 
     // Strip store property for OpenAI chat completions

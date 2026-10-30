@@ -32,6 +32,7 @@ import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { stripUnsupportedModalities } from "../translator/concerns/modality.js";
 import { prefetchRemoteImages } from "../translator/concerns/prefetch.js";
 import { defaultClaudeToolType, shouldDefaultClaudeToolType } from "../translator/concerns/toolCall.js";
+import { normalizeResponsesTools } from "../translator/formats/responsesApi.js";
 import { resolveSessionId } from "../utils/sessionManager.js";
 
 /**
@@ -276,6 +277,10 @@ export async function handleChatCore({ body, modelInfo, credentials, log, onCred
   // Anthropic-compatible endpoint 400s with "unknown variant `custom`" (#3905).
   if (shouldDefaultClaudeToolType(provider, finalFormat, translatedBody.tools, PROVIDERS)) {
     translatedBody.tools = defaultClaudeToolType(translatedBody.tools);
+  }
+
+  if (finalFormat === FORMATS.OPENAI_RESPONSES && translatedBody.tools) {
+    translatedBody.tools = normalizeResponsesTools(translatedBody.tools, { log });
   }
 
   // RTK: compress tool_result content. Skipped when already done pre-translate.
