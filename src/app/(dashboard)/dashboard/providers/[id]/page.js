@@ -28,6 +28,7 @@ import AutoPingScheduleModal from "./AutoPingScheduleModal";
 import WebLoginButton, { WEB_LOGIN_PROVIDERS } from "../components/WebLoginButton.js";
 import MinimaxLeaseButton from "../components/MinimaxLeaseButton.js";
 import { getScheduleSlotLabels } from "@/shared/services/quotaPingSchedule";
+import { randomProxyPool } from "@/lib/network/connectionProxyConstants.js";
 
 const ONE_BY_ONE_DELAY_MS = 1000;
 
@@ -1026,6 +1027,19 @@ export default function ProviderDetailPage() {
     return applyProxyAssignments(targets);
   };
 
+  // Random: every request draws a fresh active pool. The "__random__" sentinel is
+  // stored on the connection and resolved per request, so there is nothing to
+  // precompute here — one request per connection is enough.
+  const handleApplyRandom = () => {
+    const usablePools = proxyPools.filter((p) => p.isActive === true && p.proxyUrl);
+    if (usablePools.length === 0) {
+      alert("No active proxy pools with a URL available.");
+      return;
+    }
+    const targets = connections.map((c) => ({ connectionId: c.id, proxyPoolId: randomProxyPool }));
+    return applyProxyAssignments(targets);
+  };
+
 
   const isSelected = (connectionId) => selectedConnectionIds.includes(connectionId);
 
@@ -1108,6 +1122,19 @@ export default function ProviderDetailPage() {
           >
             <span className="material-symbols-outlined text-text-muted text-[18px]">sync_alt</span>
             <span className="text-sm text-text-main">One-to-one (rotate)</span>
+          </button>
+          <button
+            onClick={handleApplyRandom}
+            disabled={bulkUpdatingProxy || activePools.length === 0}
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-black/[0.04] dark:hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span className="material-symbols-outlined text-text-muted text-[18px]">shuffle</span>
+            <span className="flex min-w-0 flex-col">
+              <span className="text-sm text-text-main">Random</span>
+              <span className="text-[11px] text-text-muted">
+                A different active pool on every request
+              </span>
+            </span>
           </button>
           <button
             onClick={() => handleApplySinglePool(null)}

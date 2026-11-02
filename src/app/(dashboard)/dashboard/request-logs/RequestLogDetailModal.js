@@ -326,6 +326,7 @@ export default function RequestLogDetailModal({ logId, onClose }) {
             <MetaTile label="Cached Tokens" value={cachedTokens > 0 ? cachedTokens : null} mono />
             <MetaTile label="Reasoning Tokens" value={reasoningTokens > 0 ? reasoningTokens : null} mono />
             <MetaTile label="TTFT" value={detail.latency?.ttft ? `${detail.latency.ttft}ms` : null} mono />
+            <MetaTile label="Proxy" value={detail.proxyName || "Direct"} />
           </div>
 
           {/* Conversation Context */}

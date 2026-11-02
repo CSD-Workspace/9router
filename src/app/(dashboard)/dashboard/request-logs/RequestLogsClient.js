@@ -267,7 +267,7 @@ export default function RequestLogsClient() {
               <div className="text-xs opacity-70">Try adjusting your filters or generate a request through 9Router.</div>
             </div>
           ) : (
-            <table className="w-full min-w-[880px]">
+            <table className="w-full min-w-[1000px]">
               <thead>
                 <tr className="border-b border-black/5 dark:border-white/5">
                   <th className="text-left p-4 text-sm font-semibold text-text-main">Timestamp</th>
@@ -275,6 +275,7 @@ export default function RequestLogsClient() {
                   <th className="text-left p-4 text-sm font-semibold text-text-main">Model</th>
                   <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
                   <th className="text-left p-4 text-sm font-semibold text-text-main">Account</th>
+                  <th className="text-left p-4 text-sm font-semibold text-text-main">Proxy</th>
                   <th className="text-right p-4 text-sm font-semibold text-text-main">Tokens In/Out</th>
                   <th className="text-right p-4 text-sm font-semibold text-text-main">Duration</th>
                 </tr>
@@ -302,6 +303,9 @@ export default function RequestLogsClient() {
                       </td>
                       <td className="max-w-[130px] truncate p-4 text-sm text-text-muted font-mono" title={log.connectionId}>
                         {log.connectionId ? `${log.connectionId.slice(0, 8)}...` : "-"}
+                      </td>
+                      <td className="max-w-[150px] truncate p-4 text-sm text-text-muted" title={log.proxyName || undefined}>
+                        {log.proxyName || "Direct"}
                       </td>
                       <td className="whitespace-nowrap p-4 text-right text-sm font-mono">
                         <span className="text-text-muted">IN </span>

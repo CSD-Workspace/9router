@@ -6,6 +6,7 @@ import {
   deleteProviderConnection,
 } from "@/models";
 import { toProviderConnectionResponse, usesAwsCredentialForm } from "@/lib/providerConnectionResponse";
+import { randomProxyPool } from "@/lib/network/connectionProxyConstants.js";
 
 function normalizeProxyConfig(body = {}) {
   const hasAnyProxyField =
@@ -46,6 +47,12 @@ async function normalizeProxyPoolUpdate(proxyPoolIdInput) {
   const proxyPoolId = String(proxyPoolIdInput).trim();
   if (!proxyPoolId) {
     return { hasProxyPoolField: true, proxyPoolId: null };
+  }
+
+  // "__random__" is a mode, not a pool: it resolves to a fresh active pool on
+  // every request, so there is no id to validate against the pool table.
+  if (proxyPoolId === randomProxyPool) {
+    return { hasProxyPoolField: true, proxyPoolId };
   }
 
   const proxyPool = await getProxyPoolById(proxyPoolId);

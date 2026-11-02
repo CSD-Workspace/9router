@@ -113,6 +113,9 @@ async function flushToDatabase() {
             endedAt: item.endedAt || null,
             durationMs: item.durationMs ?? null,
             requestedModel: item.requestedModel || null,
+            // Only the fields listed here survive the write; a value built into
+            // the detail object but missing from this allowlist is silently lost.
+            proxyName: item.proxyName || null,
             status: item.status || null,
             latency: item.latency || {},
             tokens: item.tokens || {},

@@ -84,6 +84,9 @@ export function buildRequestDetail(base, overrides = {}) {
     provider: base.provider || "unknown",
     model: base.model || "unknown",
     connectionId: base.connectionId || undefined,
+    // Name of the proxy pool that carried this request, so the log can show
+    // which egress was used (null when the request went out directly).
+    proxyName: base.proxyName || null,
     timestamp: new Date().toISOString(),
     startedAt: base.startedAt || new Date().toISOString(),
     endedAt: base.endedAt || new Date().toISOString(),
