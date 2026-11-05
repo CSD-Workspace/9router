@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { AgentRouterExecutor } from "../../open-sse/executors/agentrouter.js";
+import { describe, it, expect, vi } from "vitest";
+import {
+  AgentRouterExecutor,
+  isAgentRouterRateLimitError,
+  peekStreamForRateLimit,
+} from "../../open-sse/executors/agentrouter.js";
 import { getExecutor } from "../../open-sse/executors/index.js";
 
 describe("AgentRouterExecutor (Model-Aware Routing & Request Handling)", () => {
@@ -123,5 +127,188 @@ describe("AgentRouterExecutor (Model-Aware Routing & Request Handling)", () => {
     );
     expect(errWaf.code).toBe("waf_challenge");
     expect(executor.shouldRetry(403, 0)).toBe(false);
+  });
+
+  describe("AgentRouter Overload Rate Limit Detection & 5s Retry", () => {
+    it("identifies rate limit error strings correctly", () => {
+      expect(
+        isAgentRouterRateLimitError(
+          "Your requests to gpt-5.6-sol for gpt-5.6-sol in eastus2 have exceeded token rate limit."
+        )
+      ).toBe(true);
+
+      expect(isAgentRouterRateLimitError("Rate limit reached for requests per minute (RPM)")).toBe(true);
+      expect(isAgentRouterRateLimitError("Server is temporarily overloaded, please retry")).toBe(true);
+      expect(isAgentRouterRateLimitError({ message: "exceeded token rate limit" })).toBe(true);
+      expect(isAgentRouterRateLimitError(null)).toBe(false);
+      expect(isAgentRouterRateLimitError("")).toBe(false);
+    });
+
+    it("detects rate limit inside streaming response.failed event", async () => {
+      const encoder = new TextEncoder();
+      const sseText =
+        'event: response.failed\n' +
+        'data: {"type":"response.failed","response":{"error":{"message":"Your requests to gpt-5.6-sol for gpt-5.6-sol in eastus2 have exceeded token rate limit."}}}\n\n';
+
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseText));
+          controller.close();
+        },
+      });
+
+      const peeked = await peekStreamForRateLimit(stream);
+      expect(peeked.isRateLimit).toBe(true);
+      expect(peeked.errMsg).toContain("exceeded token rate limit");
+    });
+
+    it("does not falsely identify normal streaming text as rate limit", async () => {
+      const encoder = new TextEncoder();
+      const sseText =
+        'event: response.output_text.delta\n' +
+        'data: {"type":"response.output_text.delta","delta":"Hello, how can I help you today?"}\n\n';
+
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseText));
+          controller.close();
+        },
+      });
+
+      const peeked = await peekStreamForRateLimit(stream);
+      expect(peeked.isRateLimit).toBe(false);
+    });
+
+    it("retries after rate limit and succeeds on second attempt without cancelling task", async () => {
+      const encoder = new TextEncoder();
+      let callCount = 0;
+
+      // Fast retry delay for test
+      const customExecutor = new AgentRouterExecutor("agentrouter", {
+        rateLimitDelayMs: 15,
+        maxRateLimitRetries: 3,
+      });
+
+      // Mock dispatch
+      customExecutor.dispatch = vi.fn().mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          // Attempt 1: Rate limit error in stream
+          const errorStream = new ReadableStream({
+            start(controller) {
+              controller.enqueue(
+                encoder.encode(
+                  'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"message":"Your requests to gpt-5.6-sol for gpt-5.6-sol in eastus2 have exceeded token rate limit."}}}\n\n'
+                )
+              );
+              controller.close();
+            },
+          });
+          return {
+            response: new Response(errorStream, {
+              status: 200,
+              headers: { "Content-Type": "text/event-stream" },
+            }),
+            url: "https://agentrouter.org/v1/responses",
+          };
+        }
+
+        // Attempt 2: Successful content
+        const successStream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Here is the solution."}\n\n'
+              )
+            );
+            controller.close();
+          },
+        });
+        return {
+          response: new Response(successStream, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+          url: "https://agentrouter.org/v1/responses",
+        };
+      });
+
+      const log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
+      const result = await customExecutor.execute({
+        model: "gpt-5.6-sol",
+        body: {},
+        stream: true,
+        credentials: { apiKey: "sk-test" },
+        log,
+      });
+
+      expect(callCount).toBe(2);
+      expect(result.response.status).toBe(200);
+
+      // Verify that the returned response contains the successful content
+      const reader = result.response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullText = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        fullText += decoder.decode(value, { stream: true });
+      }
+      expect(fullText).toContain("Here is the solution.");
+      expect(log.warn).toHaveBeenCalledWith(
+        "AGENTROUTER",
+        expect.stringContaining("Rate limit detected")
+      );
+    });
+
+    it("returns HTTP 429 when rate limit persists after max retries", async () => {
+      const encoder = new TextEncoder();
+      let callCount = 0;
+
+      const customExecutor = new AgentRouterExecutor("agentrouter", {
+        rateLimitDelayMs: 10,
+        maxRateLimitRetries: 2,
+      });
+
+      customExecutor.dispatch = vi.fn().mockImplementation(async () => {
+        callCount++;
+        const errorStream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"message":"Your requests to gpt-5.6-sol for gpt-5.6-sol in eastus2 have exceeded token rate limit."}}}\n\n'
+              )
+            );
+            controller.close();
+          },
+        });
+        return {
+          response: new Response(errorStream, {
+            status: 200,
+            headers: { "Content-Type": "text/event-stream" },
+          }),
+          url: "https://agentrouter.org/v1/responses",
+        };
+      });
+
+      const log = { warn: vi.fn(), info: vi.fn(), debug: vi.fn(), error: vi.fn() };
+      const result = await customExecutor.execute({
+        model: "gpt-5.6-sol",
+        body: {},
+        stream: true,
+        credentials: { apiKey: "sk-test" },
+        log,
+      });
+
+      // Attempt 1 + 2 retries = 3 attempts total
+      expect(callCount).toBe(3);
+      expect(result.response.status).toBe(429);
+      const json = await result.response.json();
+      expect(json.error.message).toContain("exceeded token rate limit");
+      expect(log.error).toHaveBeenCalledWith(
+        "AGENTROUTER",
+        expect.stringContaining("Rate limit persisted after 2 retries")
+      );
+    });
   });
 });

@@ -15,6 +15,10 @@ export default {
     },
   },
   category: "freeTier",
+  features: {
+    usage: true,
+    usageApikey: true,
+  },
   authType: "apikey",
   authModes: ["apikey"],
   hasFree: true,

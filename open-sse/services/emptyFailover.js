@@ -36,11 +36,11 @@ import { parseSSELine } from "../utils/streamHelpers.js";
 export function deltaHasClientContent(delta) {
   if (!delta || typeof delta !== "object") return false;
   const c = delta.content;
-  if (typeof c === "string" && c.length > 0) return true;
+  if (typeof c === "string" && c.length > 0 && !c.startsWith("[Error] ")) return true;
   if (Array.isArray(c) && c.length > 0) return true;
   if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
   // OpenAI "Responses" style / non-chat deltas occasionally use output_text
-  if (typeof delta.output_text === "string" && delta.output_text.length > 0) return true;
+  if (typeof delta.output_text === "string" && delta.output_text.length > 0 && !delta.output_text.startsWith("[Error] ")) return true;
   return false;
 }
 
@@ -57,12 +57,12 @@ function inspectClaudeEvent(obj) {
   let content = false, finishReason = null;
   if (obj.type === CLAUDE_EVENT.CONTENT_BLOCK_DELTA) {
     const d = obj.delta || {};
-    if (d.type === CLAUDE_DELTA.TEXT && nonEmptyString(d.text)) content = true;
+    if (d.type === CLAUDE_DELTA.TEXT && nonEmptyString(d.text) && !d.text.startsWith("[Error] ")) content = true;
     if (d.type === CLAUDE_DELTA.INPUT_JSON && nonEmptyString(d.partial_json)) content = true;
   } else if (obj.type === CLAUDE_EVENT.CONTENT_BLOCK_START) {
     const b = obj.content_block || {};
     if (b.type === CLAUDE_BLOCK.TOOL_USE) content = true;
-    if (b.type === CLAUDE_BLOCK.TEXT && nonEmptyString(b.text)) content = true;
+    if (b.type === CLAUDE_BLOCK.TEXT && nonEmptyString(b.text) && !b.text.startsWith("[Error] ")) content = true;
   } else if (obj.type === CLAUDE_EVENT.MESSAGE_DELTA && obj.delta?.stop_reason) {
     // refusal → content_filter (the translator renders content_filter as refusal for Claude clients)
     finishReason = toOpenAIFinish(obj.delta.stop_reason, FORMATS.CLAUDE);
@@ -84,10 +84,10 @@ function inspectResponsesEvent(obj) {
     case RESPONSES_EVENT.OUTPUT_TEXT_DELTA:
     case RESPONSES_EVENT.FUNCTION_CALL_ARGUMENTS_DELTA:
     case RESPONSES_EVENT.CUSTOM_TOOL_CALL_INPUT_DELTA:
-      content = nonEmptyString(obj.delta);
+      content = nonEmptyString(obj.delta) && !String(obj.delta).startsWith("[Error] ");
       break;
     case RESPONSES_EVENT.OUTPUT_TEXT_DONE:
-      content = nonEmptyString(obj.text);
+      content = nonEmptyString(obj.text) && !String(obj.text).startsWith("[Error] ");
       break;
     case RESPONSES_EVENT.OUTPUT_ITEM_ADDED:
     case RESPONSES_EVENT.OUTPUT_ITEM_DONE:

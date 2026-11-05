@@ -150,7 +150,8 @@ export function createSSEStream(options = {}) {
       onStreamComplete({
         content: accumulatedContent,
         thinking: accumulatedThinking,
-        toolCalls: toolCallAcc.size ? [...toolCallAcc.values()] : null
+        toolCalls: toolCallAcc.size ? [...toolCallAcc.values()] : null,
+        error: state?.error || null
       }, finalUsage, ttftAt);
     }
   };

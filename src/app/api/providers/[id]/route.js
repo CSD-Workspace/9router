@@ -147,8 +147,10 @@ export async function PUT(request, { params }) {
         ...(existing.providerSpecificData || {}),
         ...incomingProviderSpecificData,
       };
-      if (isAwsCredential && incomingProviderSpecificData.sessionToken === null) {
-        delete updateData.providerSpecificData.sessionToken;
+      for (const [k, v] of Object.entries(incomingProviderSpecificData)) {
+        if (v === null) {
+          delete updateData.providerSpecificData[k];
+        }
       }
 
       if (proxyConfig.hasAnyProxyField) {

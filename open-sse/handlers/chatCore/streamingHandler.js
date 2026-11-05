@@ -167,6 +167,10 @@ export function buildOnStreamComplete({ provider, model, connectionId, proxyName
       || (toolCalls ? toolCalls.map((c) => `[tool_call] ${c.function.name}(${c.function.arguments})`).join("\n") : "")
       || "[Empty streaming response]";
 
+    const isStreamError = !!contentObj?.error;
+    const streamStatus = isStreamError ? "error" : "success";
+    const streamFinishReason = isStreamError ? "failed" : "stop";
+
     saveRequestDetail(buildRequestDetail({
       provider, model, connectionId, proxyName,
       startedAt: new Date(requestStartTime).toISOString(),
@@ -191,16 +195,21 @@ export function buildOnStreamComplete({ provider, model, connectionId, proxyName
                 ...(safeThinking ? { reasoning_content: safeThinking } : {}),
                 ...(toolCalls ? { tool_calls: toolCalls } : {})
               },
-              finish_reason: "stop"
+              finish_reason: streamFinishReason
             }
           ],
           usage: usage || { prompt_tokens: 0, completion_tokens: 0 },
           _streamed: true
         }
       },
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      response: {
+        content: safeContent,
+        thinking: safeThinking,
+        type: "streaming",
+        ...(isStreamError ? { error: contentObj.error.message || contentObj.error } : {})
+      },
       pxpipe,
-      status: "success"
+      status: streamStatus
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });
