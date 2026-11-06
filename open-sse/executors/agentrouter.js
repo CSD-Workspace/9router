@@ -1,5 +1,8 @@
 import { DefaultExecutor } from "./default.js";
-import { getAgentRouterHeaders, normalizeProfile } from "../providers/agentrouterPolicy.js";
+import {
+  getAgentRouterHeaders,
+  normalizeProfile,
+} from "../providers/agentrouterPolicy.js";
 import { globalWafStore, isWafBlock } from "../providers/agentrouterWaf.js";
 import { HTTP_STATUS } from "../config/runtimeConfig.js";
 import { openaiToOpenAIResponsesRequest } from "../translator/request/openai-responses.js";
@@ -12,8 +15,8 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { reconstructStream } from "../services/emptyFailover.js";
 
 const DEFAULT_BASE_URL = "https://agentrouter.org/v1";
-const DEFAULT_RATE_LIMIT_DELAY_MS = 5000;
-const DEFAULT_MAX_RATE_LIMIT_RETRIES = 3;
+const DEFAULT_RATE_LIMIT_DELAY_MS = 500;
+const DEFAULT_MAX_RATE_LIMIT_RETRIES = 5;
 
 export function isAgentRouterRateLimitError(msg) {
   if (!msg) return false;
@@ -41,13 +44,20 @@ function extractErrorFromParsedSSE(parsed, rawLine) {
   if (parsed) {
     const errObj = parsed.error || parsed.response?.error;
     if (errObj) {
-      return typeof errObj === "string" ? errObj : (errObj.message || JSON.stringify(errObj));
+      return typeof errObj === "string"
+        ? errObj
+        : errObj.message || JSON.stringify(errObj);
     }
     if (parsed.type === "response.failed" || parsed.type === "error") {
-      const msg = parsed.response?.error?.message || parsed.error?.message || parsed.message;
+      const msg =
+        parsed.response?.error?.message ||
+        parsed.error?.message ||
+        parsed.message;
       if (msg) return String(msg);
     }
-    const content = parsed.choices?.[0]?.delta?.content || parsed.choices?.[0]?.message?.content;
+    const content =
+      parsed.choices?.[0]?.delta?.content ||
+      parsed.choices?.[0]?.message?.content;
     if (typeof content === "string" && content.startsWith("[Error] ")) {
       return content.slice(8).trim();
     }
@@ -56,7 +66,10 @@ function extractErrorFromParsedSSE(parsed, rawLine) {
     if (rawLine.startsWith("data: [Error] ")) {
       return rawLine.slice(14).trim();
     }
-    if ((rawLine.includes("response.failed") || rawLine.includes('"error"')) && isAgentRouterRateLimitError(rawLine)) {
+    if (
+      (rawLine.includes("response.failed") || rawLine.includes('"error"')) &&
+      isAgentRouterRateLimitError(rawLine)
+    ) {
       return rawLine;
     }
   }
@@ -88,11 +101,16 @@ function lineCarriesValidContent(parsed) {
   // Chat completions (OpenAI)
   const delta = parsed.choices?.[0]?.delta || parsed.choices?.[0]?.message;
   if (delta) {
-    if (typeof delta.content === "string" && delta.content.length > 0 && !delta.content.startsWith("[Error] ")) {
+    if (
+      typeof delta.content === "string" &&
+      delta.content.length > 0 &&
+      !delta.content.startsWith("[Error] ")
+    ) {
       return true;
     }
     if (delta.reasoning_content || delta.reasoning) return true;
-    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true;
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0)
+      return true;
   }
   // Gemini
   if (parsed.candidates?.[0]?.content?.parts?.length > 0) {
@@ -127,12 +145,24 @@ export async function peekStreamForRateLimit(body, { timeoutMs = 8000 } = {}) {
       res = await Promise.race([pendingRead, deadline]);
     } catch (err) {
       pendingRead = null;
-      return settle({ isRateLimit: false, error: err, head: headChunks, reader, pendingRead: null });
+      return settle({
+        isRateLimit: false,
+        error: err,
+        head: headChunks,
+        reader,
+        pendingRead: null,
+      });
     }
 
     if (res === "__deadline__") {
       // Deadline elapsed without error: fail open, treat as valid content
-      return settle({ isRateLimit: false, timedOut: true, head: headChunks, reader, pendingRead });
+      return settle({
+        isRateLimit: false,
+        timedOut: true,
+        head: headChunks,
+        reader,
+        pendingRead,
+      });
     }
 
     const { done, value } = res;
@@ -145,11 +175,22 @@ export async function peekStreamForRateLimit(body, { timeoutMs = 8000 } = {}) {
           const parsed = parseSSELine(line);
           const errText = extractErrorFromParsedSSE(parsed, line);
           if (errText && isAgentRouterRateLimitError(errText)) {
-            return settle({ isRateLimit: true, errMsg: errText, head: headChunks, reader, pendingRead: null });
+            return settle({
+              isRateLimit: true,
+              errMsg: errText,
+              head: headChunks,
+              reader,
+              pendingRead: null,
+            });
           }
         }
       }
-      return settle({ isRateLimit: false, head: headChunks, reader, pendingRead: null });
+      return settle({
+        isRateLimit: false,
+        head: headChunks,
+        reader,
+        pendingRead: null,
+      });
     }
 
     headChunks.push(value);
@@ -166,13 +207,24 @@ export async function peekStreamForRateLimit(body, { timeoutMs = 8000 } = {}) {
       const parsed = parseSSELine(line);
       const errText = extractErrorFromParsedSSE(parsed, line);
       if (errText && isAgentRouterRateLimitError(errText)) {
-        return settle({ isRateLimit: true, errMsg: errText, head: headChunks, reader, pendingRead: null });
+        return settle({
+          isRateLimit: true,
+          errMsg: errText,
+          head: headChunks,
+          reader,
+          pendingRead: null,
+        });
       }
 
       // Check if line carries usable content or thinking or tool calls
       if (lineCarriesValidContent(parsed)) {
         // Legitimate model response started! Not rate limited.
-        return settle({ isRateLimit: false, head: headChunks, reader, pendingRead: null });
+        return settle({
+          isRateLimit: false,
+          head: headChunks,
+          reader,
+          pendingRead: null,
+        });
       }
     }
   }
@@ -181,7 +233,10 @@ export async function peekStreamForRateLimit(body, { timeoutMs = 8000 } = {}) {
 function cleanBaseUrl(url) {
   let base = (url || DEFAULT_BASE_URL).trim().replace(/\/+$/, "");
   // Strip trailing endpoint if provided (e.g. /messages, /chat/completions, /responses, /models)
-  base = base.replace(/\/+(messages(\?.*)?|chat\/completions|responses|models)$/i, "");
+  base = base.replace(
+    /\/+(messages(\?.*)?|chat\/completions|responses|models)$/i,
+    "",
+  );
   if (!base.endsWith("/v1")) {
     // If base doesn't end with /v1, append it
     base = `${base}/v1`;
@@ -190,7 +245,13 @@ function cleanBaseUrl(url) {
 }
 
 export class AgentRouterExecutor extends DefaultExecutor {
-  constructor(provider = "agentrouter", { rateLimitDelayMs = DEFAULT_RATE_LIMIT_DELAY_MS, maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES } = {}) {
+  constructor(
+    provider = "agentrouter",
+    {
+      rateLimitDelayMs = DEFAULT_RATE_LIMIT_DELAY_MS,
+      maxRateLimitRetries = DEFAULT_MAX_RATE_LIMIT_RETRIES,
+    } = {},
+  ) {
     super(provider);
     this.provider = provider;
     this.rateLimitDelayMs = rateLimitDelayMs;
@@ -217,7 +278,10 @@ export class AgentRouterExecutor extends DefaultExecutor {
       return rt.urlSuffix ? `${rt.baseUrl}${rt.urlSuffix}` : rt.baseUrl;
     }
 
-    const rawBase = credentials?.providerSpecificData?.baseUrl || this.config.baseUrl || DEFAULT_BASE_URL;
+    const rawBase =
+      credentials?.providerSpecificData?.baseUrl ||
+      this.config.baseUrl ||
+      DEFAULT_BASE_URL;
     const base = cleanBaseUrl(rawBase);
 
     if (this.isClaudeModel(model)) {
@@ -229,7 +293,13 @@ export class AgentRouterExecutor extends DefaultExecutor {
     return `${base}/chat/completions`;
   }
 
-  buildHeaders(credentials, stream = true, url = "", model = "", transformedBody = null) {
+  buildHeaders(
+    credentials,
+    stream = true,
+    url = "",
+    model = "",
+    transformedBody = null,
+  ) {
     const isClaude = url.includes("/messages") || this.isClaudeModel(model);
     const configuredProfile = credentials?.providerSpecificData?.profile;
 
@@ -250,7 +320,10 @@ export class AgentRouterExecutor extends DefaultExecutor {
 
     // GLM models thinking mapping: AgentRouter GLM upstream expects thinking.type = "enabled"
     if (/^glm-/i.test(model)) {
-      if (transformed.thinking?.type === "adaptive" || transformed.reasoning_effort) {
+      if (
+        transformed.thinking?.type === "adaptive" ||
+        transformed.reasoning_effort
+      ) {
         transformed.thinking = { type: "enabled" };
       }
     }
@@ -264,8 +337,14 @@ export class AgentRouterExecutor extends DefaultExecutor {
         // Chat Completions format: AgentRouter upstream uses Rust serde for tool calls, requiring type: "function"
         transformed.tools = transformed.tools
           .map((tool) => {
-            if (!tool || typeof tool !== "object" || Array.isArray(tool)) return null;
-            const fn = tool.function && typeof tool.function === "object" && !Array.isArray(tool.function) ? tool.function : tool;
+            if (!tool || typeof tool !== "object" || Array.isArray(tool))
+              return null;
+            const fn =
+              tool.function &&
+              typeof tool.function === "object" &&
+              !Array.isArray(tool.function)
+                ? tool.function
+                : tool;
             const rawName = tool.name || fn.name;
             const name = typeof rawName === "string" ? rawName.trim() : "";
             if (!name) return null;
@@ -274,7 +353,8 @@ export class AgentRouterExecutor extends DefaultExecutor {
               function: {
                 name: name.slice(0, 128),
                 description: fn.description || tool.description || "",
-                parameters: fn.parameters || tool.parameters || { type: "object", properties: {} },
+                parameters: fn.parameters ||
+                  tool.parameters || { type: "object", properties: {} },
               },
             };
           })
@@ -298,7 +378,8 @@ export class AgentRouterExecutor extends DefaultExecutor {
       return {
         status: 400,
         code: "content_blocked",
-        message: "Prompt blocked by AgentRouter keyword content filter. Please avoid placeholder phrases or test tokens.",
+        message:
+          "Prompt blocked by AgentRouter keyword content filter. Please avoid placeholder phrases or test tokens.",
       };
     }
 
@@ -310,7 +391,8 @@ export class AgentRouterExecutor extends DefaultExecutor {
       return {
         status: 503,
         code: "no_channel",
-        message: "AgentRouter has no available channel for this model/key. Triggering fallback.",
+        message:
+          "AgentRouter has no available channel for this model/key. Triggering fallback.",
       };
     }
 
@@ -325,7 +407,9 @@ export class AgentRouterExecutor extends DefaultExecutor {
     // WAF HTML challenge page
     if (
       (response.status === 403 || response.status === 405) &&
-      (text.includes("alicdn") || text.includes("block_message") || text.includes("waf.js"))
+      (text.includes("alicdn") ||
+        text.includes("block_message") ||
+        text.includes("waf.js"))
     ) {
       return {
         status: 403,
@@ -339,12 +423,7 @@ export class AgentRouterExecutor extends DefaultExecutor {
 
   shouldRetry(status, urlIndex) {
     // Never retry auth errors, quota exhaustion, content filter rejections, or no-channel errors
-    if (
-      status === 400 ||
-      status === 401 ||
-      status === 403 ||
-      status === 402
-    ) {
+    if (status === 400 || status === 401 || status === 403 || status === 402) {
       return false;
     }
 
@@ -364,8 +443,14 @@ export class AgentRouterExecutor extends DefaultExecutor {
           const cloned = result.response.clone();
           const text = await cloned.text();
           if (isWafBlock(result.response.status, text)) {
-            params.log?.debug?.("WAF", "Encountered WAF challenge page. Warming up cookies and retrying once...");
-            const rawBase = params.credentials?.providerSpecificData?.baseUrl || this.config.baseUrl || DEFAULT_BASE_URL;
+            params.log?.debug?.(
+              "WAF",
+              "Encountered WAF challenge page. Warming up cookies and retrying once...",
+            );
+            const rawBase =
+              params.credentials?.providerSpecificData?.baseUrl ||
+              this.config.baseUrl ||
+              DEFAULT_BASE_URL;
             const warmed = await globalWafStore.warmup(rawBase);
             if (warmed) {
               result = await super.execute(params);
@@ -390,7 +475,10 @@ export class AgentRouterExecutor extends DefaultExecutor {
             text.includes("responses instead") ||
             text.includes("not support /v1/chat/completions")
           ) {
-            params.log?.warn?.("AGENTROUTER", `Model ${params.model} requires /v1/responses. Escalating to Responses API...`);
+            params.log?.warn?.(
+              "AGENTROUTER",
+              `Model ${params.model} requires /v1/responses. Escalating to Responses API...`,
+            );
             return await this.executeWithResponsesEndpoint(params);
           }
         } catch {
@@ -403,7 +491,10 @@ export class AgentRouterExecutor extends DefaultExecutor {
   }
 
   async execute(params) {
-    const rawBase = params.credentials?.providerSpecificData?.baseUrl || this.config.baseUrl || DEFAULT_BASE_URL;
+    const rawBase =
+      params.credentials?.providerSpecificData?.baseUrl ||
+      this.config.baseUrl ||
+      DEFAULT_BASE_URL;
 
     // Warmup WAF session cookies if store is empty
     if (!globalWafStore.get()) {
@@ -438,20 +529,31 @@ export class AgentRouterExecutor extends DefaultExecutor {
             rateLimitMsg = "HTTP 429 Rate Limit";
           }
         } else if (result.response.ok) {
-          const ct = (result.response.headers.get("content-type") || "").toLowerCase();
+          const ct = (
+            result.response.headers.get("content-type") || ""
+          ).toLowerCase();
           if (ct.includes("text/event-stream") || params.stream) {
             const peeked = await peekStreamForRateLimit(result.response.body);
             if (peeked.isRateLimit) {
               isRateLimit = true;
               rateLimitMsg = peeked.errMsg || "Stream token rate limit";
-              try { await peeked.reader.cancel(); } catch {}
+              try {
+                await peeked.reader.cancel();
+              } catch {}
             } else {
               // Healthy stream: reconstruct stream so zero bytes/chunks are dropped
-              result.response = new Response(reconstructStream(peeked.head, peeked.reader, peeked.pendingRead), {
-                status: result.response.status,
-                statusText: result.response.statusText,
-                headers: result.response.headers,
-              });
+              result.response = new Response(
+                reconstructStream(
+                  peeked.head,
+                  peeked.reader,
+                  peeked.pendingRead,
+                ),
+                {
+                  status: result.response.status,
+                  statusText: result.response.statusText,
+                  headers: result.response.headers,
+                },
+              );
               return result;
             }
           } else if (ct.includes("application/json")) {
@@ -461,7 +563,8 @@ export class AgentRouterExecutor extends DefaultExecutor {
               const err = json?.error?.message || json?.error || json?.message;
               if (isAgentRouterRateLimitError(err)) {
                 isRateLimit = true;
-                rateLimitMsg = typeof err === "string" ? err : JSON.stringify(err);
+                rateLimitMsg =
+                  typeof err === "string" ? err : JSON.stringify(err);
               }
             } catch {}
             if (!isRateLimit) return result;
@@ -484,8 +587,14 @@ export class AgentRouterExecutor extends DefaultExecutor {
         if (isRateLimit) {
           lastRateLimitMsg = rateLimitMsg;
           if (attempt <= maxRetries && !params.signal?.aborted) {
-            const cleanMsg = typeof rateLimitMsg === "string" ? rateLimitMsg.slice(0, 150) : "";
-            params.log?.warn?.("AGENTROUTER", `[RATE_LIMIT] ${params.model}: Rate limit detected ("${cleanMsg}"). Retrying in ${retryDelayMs / 1000}s (attempt ${attempt}/${maxRetries})...`);
+            const cleanMsg =
+              typeof rateLimitMsg === "string"
+                ? rateLimitMsg.slice(0, 150)
+                : "";
+            params.log?.warn?.(
+              "AGENTROUTER",
+              `[RATE_LIMIT] ${params.model}: Rate limit detected ("${cleanMsg}"). Retrying in ${retryDelayMs / 1000}s (attempt ${attempt}/${maxRetries})...`,
+            );
             await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
             continue;
           }
@@ -496,7 +605,10 @@ export class AgentRouterExecutor extends DefaultExecutor {
     }
 
     if (lastRateLimitMsg) {
-      params.log?.error?.("AGENTROUTER", `[RATE_LIMIT] ${params.model}: Rate limit persisted after ${maxRetries} retries ("${lastRateLimitMsg}").`);
+      params.log?.error?.(
+        "AGENTROUTER",
+        `[RATE_LIMIT] ${params.model}: Rate limit persisted after ${maxRetries} retries ("${lastRateLimitMsg}").`,
+      );
       return {
         response: new Response(
           JSON.stringify({
@@ -509,7 +621,7 @@ export class AgentRouterExecutor extends DefaultExecutor {
           {
             status: 429,
             headers: { "Content-Type": "application/json" },
-          }
+          },
         ),
         url: lastResult?.url,
         headers: lastResult?.headers,
@@ -521,21 +633,47 @@ export class AgentRouterExecutor extends DefaultExecutor {
     return lastResult;
   }
 
-  async executeWithResponsesEndpoint({ model, body, stream, credentials, signal, log, proxyOptions = null }) {
-    const rawBase = credentials?.providerSpecificData?.baseUrl || this.config.baseUrl || DEFAULT_BASE_URL;
+  async executeWithResponsesEndpoint({
+    model,
+    body,
+    stream,
+    credentials,
+    signal,
+    log,
+    proxyOptions = null,
+  }) {
+    const rawBase =
+      credentials?.providerSpecificData?.baseUrl ||
+      this.config.baseUrl ||
+      DEFAULT_BASE_URL;
     const base = cleanBaseUrl(rawBase);
     const url = `${base}/responses`;
-    const transformedBody = openaiToOpenAIResponsesRequest(model, body, stream, credentials);
-    const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
+    const transformedBody = openaiToOpenAIResponsesRequest(
+      model,
+      body,
+      stream,
+      credentials,
+    );
+    const headers = this.buildHeaders(
+      credentials,
+      stream,
+      url,
+      model,
+      transformedBody,
+    );
 
     log?.debug?.("AGENTROUTER", `Sending escalated request to ${url}`);
 
-    const response = await proxyAwareFetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(transformedBody),
-      signal,
-    }, proxyOptions);
+    const response = await proxyAwareFetch(
+      url,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify(transformedBody),
+        signal,
+      },
+      proxyOptions,
+    );
 
     if (response) {
       globalWafStore.capture(response);
