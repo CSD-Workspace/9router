@@ -1,14 +1,23 @@
 import { NextResponse } from "next/server";
-import { getRequestDetails } from "@/lib/usageDb";
+import {
+  getRequestDetails,
+  getRequestDetailsStats, clearRequestDetails, deleteRequestDetailsBefore,
+} from "@/lib/usageDb";
 
 /**
  * GET /api/usage/request-details
  * Query parameters: page, pageSize (1-100), provider, model, connectionId, status, startDate, endDate
+ *             ?stats=1 returns stats only (total, oldest, newest)
  */
 export async function GET(request) {
   try {
     const { searchParams } = new URL(request.url);
-    
+
+    if (searchParams.get("stats") === "1") {
+      const stats = await getRequestDetailsStats();
+      return NextResponse.json(stats);
+    }
+
     const pageRaw = parseInt(searchParams.get("page"));
     const page = Number.isNaN(pageRaw) ? 1 : pageRaw;
     const pageSizeRaw = parseInt(searchParams.get("pageSize"));
@@ -55,7 +64,7 @@ export async function GET(request) {
     // metadata (model, tokens, latency, status) but drop message content.
     const redactedDetails = (result.details || []).map((d) => {
       const redacted = { ...d };
-      for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
+      for (const key of ["clientRawRequest", "request", "providerRequest", "providerResponse", "response"]) {
         if (redacted[key] !== undefined) {
           redacted[key] = { redacted: true };
         }
@@ -68,6 +77,30 @@ export async function GET(request) {
     console.error("[API] Failed to get request details:", error);
     return NextResponse.json(
       { error: "Failed to fetch request details" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * DELETE /api/usage/request-details
+ * Manual clear: deletes all request log records.
+ * Body: { mode: "all" } or { mode: "before", cutoff: isoDate }
+ */
+export async function DELETE(request) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    let deleted = 0;
+    if (body?.mode === "before" && body.cutoff) {
+      deleted = await deleteRequestDetailsBefore(body.cutoff);
+    } else {
+      deleted = await clearRequestDetails();
+    }
+    return NextResponse.json({ success: true, deleted });
+  } catch (error) {
+    console.error("[API] Failed to clear request details:", error);
+    return NextResponse.json(
+      { error: "Failed to clear request details" },
       { status: 500 }
     );
   }

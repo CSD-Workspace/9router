@@ -48,6 +48,15 @@ export default function ProxyPoolsPage() {
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
   const [deploying, setDeploying] = useState(false);
+  // Multi-deploy: how many relays one submit creates, plus live progress so a
+  // long sequential run (Vercel polls up to 2 min per deployment) is visible
+  // and can be stopped part-way.
+  const [deployCount, setDeployCount] = useState(1);
+  const [deployProgress, setDeployProgress] = useState(null);
+  // A ref, not state: the running loop reads it between awaits, and a state
+  // value would stay frozen at `false` inside the closure that started the run.
+  const deployCancelRef = useRef(false);
+  const [deployCancelRequested, setDeployCancelRequested] = useState(false);
   const [testingId, setTestingId] = useState(null);
   const [selectedPoolIds, setSelectedIds] = useState([]);
   const [statusFilter, setStatusFilter] = useState("all");
@@ -75,12 +84,19 @@ export default function ProxyPoolsPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showRelayMenu]);
 
-  const fetchProxyPools = useCallback(async () => {
+  const sortPoolsByName = (pools) => [...pools].sort((a, b) =>
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true }));
+
+  // `sortByName` keeps the table in name order for the callers that want it
+  // (Test All); the default keeps the server's order, which is most recently
+  // updated first.
+  const fetchProxyPools = useCallback(async ({ sortByName = false } = {}) => {
     try {
       const res = await fetch("/api/proxy-pools?includeUsage=true", { cache: "no-store" });
       const data = await res.json();
       if (res.ok) {
-        setProxyPools(data.proxyPools || []);
+        const list = data.proxyPools || [];
+        setProxyPools(sortByName ? sortPoolsByName(list) : list);
       }
     } catch (error) {
       console.log("Error fetching proxy pools:", error);
@@ -189,7 +205,9 @@ export default function ProxyPoolsPage() {
       }
 
       await fetchProxyPools();
-      notify.success(data.ok ? "Proxy test passed" : "Proxy test failed");
+      if (data.ok) notify.success("Proxy test passed");
+      else if (data.egressIpIsLocal === true) notify.error("Proxy test reveals original IP");
+      else notify.error(data.error || "Proxy test failed");
     } catch (error) {
       console.log("Error testing proxy pool:", error);
       notify.error("Failed to test proxy");
@@ -403,104 +421,100 @@ export default function ProxyPoolsPage() {
     setShowNetlifyModal(false);
   };
 
-  const handleVercelDeploy = async () => {
-    if (!vercelForm.vercelToken.trim()) return;
+  // Names must be unique per platform (Deno 409, Netlify 422) and a repeated
+  // Cloudflare name silently overwrites the existing worker, so every relay in
+  // a batch gets its own suffix. A single relay keeps the plain base name,
+  // which matches what the form shows and what earlier releases created.
+  const buildRelayNames = (baseName, count, fallbackBase) => {
+    const base = (baseName || "").trim() || fallbackBase;
+    if (count === 1) return [base];
+    return Array.from({ length: count }, (_, i) => `${base}-${i + 1}`);
+  };
+
+  const runMultiDeploy = async ({ endpoint, form, fallbackBase }) => {
+    const count = Math.max(1, Math.min(10, Number(deployCount) || 1));
+    const names = buildRelayNames(form.projectName, count, fallbackBase);
+
     setDeploying(true);
+    deployCancelRef.current = false;
+    setDeployCancelRequested(false);
+    const created = [];
+    const failed = [];
+
     try {
-      const res = await fetch("/api/proxy-pools/vercel-deploy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(vercelForm),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        await fetchProxyPools();
-        closeVercelModal();
-        notify.success(`Deployed: ${data.deployUrl}`);
-      } else {
-        notify.error(data.error || "Deploy failed");
+      for (let i = 0; i < names.length; i += 1) {
+        if (deployCancelRef.current) break;
+        const name = names[i];
+        setDeployProgress({ current: i + 1, total: names.length, name });
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...form, projectName: name }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) created.push({ name, url: data.deployUrl });
+          else failed.push({ name, error: data.error || `HTTP ${res.status}` });
+        } catch (error) {
+          failed.push({ name, error: error.message || "Request failed" });
+        }
       }
-    } catch (error) {
-      console.log("Error deploying Vercel relay:", error);
-      notify.error("Deploy failed");
+
+      await fetchProxyPools();
+
+      if (created.length > 0 && failed.length === 0) {
+        notify.success(
+          created.length === 1
+            ? `Deployed: ${created[0].url}`
+            : `Deployed ${created.length} relays: ${created.map((c) => c.name).join(", ")}`,
+        );
+      } else if (created.length > 0) {
+        notify.warning(
+          `Created ${created.length}, failed ${failed.length}: ${failed.map((f) => `${f.name} (${f.error})`).join(", ")}`,
+        );
+      } else if (failed.length > 0) {
+        notify.error(`Deploy failed: ${failed.map((f) => `${f.name} (${f.error})`).join(", ")}`);
+      }
     } finally {
       setDeploying(false);
+      setDeployProgress(null);
     }
+  };
+
+  const handleVercelDeploy = async () => {
+    if (!vercelForm.vercelToken.trim()) return;
+    await runMultiDeploy({
+      endpoint: "/api/proxy-pools/vercel-deploy",
+      form: vercelForm,
+      fallbackBase: "vercel-relay",
+    });
   };
 
   const handleCloudflareDeploy = async () => {
     if (!cloudflareForm.accountId.trim() || !cloudflareForm.apiToken.trim()) return;
-    setDeploying(true);
-    try {
-      const res = await fetch("/api/proxy-pools/cloudflare-deploy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(cloudflareForm),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        await fetchProxyPools();
-        closeCloudflareModal();
-        notify.success(`Deployed: ${data.deployUrl}`);
-      } else {
-        notify.error(data.error || "Deploy failed");
-      }
-    } catch (error) {
-      console.log("Error deploying Cloudflare relay:", error);
-      notify.error("Deploy failed");
-    } finally {
-      setDeploying(false);
-    }
+    await runMultiDeploy({
+      endpoint: "/api/proxy-pools/cloudflare-deploy",
+      form: cloudflareForm,
+      fallbackBase: "cloudflare-relay",
+    });
   };
 
   const handleDenoDeploy = async () => {
     if (!denoForm.denoToken.trim()) return;
-    setDeploying(true);
-    try {
-      const res = await fetch("/api/proxy-pools/deno-deploy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(denoForm),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        await fetchProxyPools();
-        closeDenoModal();
-        notify.success(`Deployed: ${data.deployUrl}`);
-      } else {
-        notify.error(data.error || "Deploy failed");
-      }
-    } catch (error) {
-      console.log("Error deploying Deno relay:", error);
-      notify.error("Deploy failed");
-    } finally {
-      setDeploying(false);
-    }
+    await runMultiDeploy({
+      endpoint: "/api/proxy-pools/deno-deploy",
+      form: denoForm,
+      fallbackBase: "deno-relay",
+    });
   };
 
   const handleNetlifyDeploy = async () => {
     if (!netlifyForm.netlifyToken.trim()) return;
-    setDeploying(true);
-    try {
-      const res = await fetch("/api/proxy-pools/netlify-deploy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(netlifyForm),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        await fetchProxyPools();
-        closeNetlifyModal();
-        notify.success(`Deployed: ${data.deployUrl}`);
-      } else {
-        notify.error(data.error || "Deploy failed");
-      }
-    } catch (error) {
-      console.log("Error deploying Netlify relay:", error);
-      notify.error("Deploy failed");
-    } finally {
-      setDeploying(false);
-    }
+    await runMultiDeploy({
+      endpoint: "/api/proxy-pools/netlify-deploy",
+      form: netlifyForm,
+      fallbackBase: "netlify-relay",
+    });
   };
 
   const parseProxyLine = (line) => {
@@ -619,6 +633,52 @@ export default function ProxyPoolsPage() {
     [proxyPools]
   );
 
+  // Test every pool, one at a time, then show the list in name order.
+  // Sequential on purpose: each relay test makes its own upstream call, and
+  // firing many at once can trip provider rate limits or skew the egress-IP
+  // lookup timing. Separate from handleHealthCheck, which is scoped to the
+  // current selection and offers to disable the dead ones.
+  const handleTestAll = async () => {
+    const targets = sortPoolsByName(proxyPools);
+    if (targets.length === 0) return;
+
+    setHealthChecking(true);
+    setHealthProgress({ current: 0, total: targets.length });
+
+    let passed = 0;
+    const failed = [];
+
+    try {
+      for (let i = 0; i < targets.length; i += 1) {
+        const pool = targets[i];
+        try {
+          const res = await fetch(`/api/proxy-pools/${pool.id}/test`, { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.ok) passed += 1;
+          else failed.push({ name: pool.name, error: data.error || "test failed" });
+        } catch (error) {
+          failed.push({ name: pool.name, error: error.message || "request failed" });
+        } finally {
+          setHealthProgress({ current: i + 1, total: targets.length });
+        }
+      }
+
+      // The server orders by most-recently-tested; show the finished run by name.
+      await fetchProxyPools({ sortByName: true });
+
+      if (failed.length === 0) {
+        notify.success(`All ${passed} proxies passed`);
+      } else {
+        notify.error(
+          `${passed}/${targets.length} passed. Failed: ${failed.map((f) => `${f.name} (${f.error})`).join(", ")}`,
+        );
+      }
+    } finally {
+      setHealthChecking(false);
+      setHealthProgress({ current: 0, total: 0 });
+    }
+  };
+
   if (loading) {
     return (
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-1 sm:gap-6 sm:px-0">
@@ -636,6 +696,15 @@ export default function ProxyPoolsPage() {
         </div>
 
         <div className="grid grid-cols-1 gap-2 sm:flex sm:items-center">
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={healthChecking ? "progress_activity" : "science"}
+            onClick={handleTestAll}
+            disabled={healthChecking || bulkBusy || proxyPools.length === 0}
+          >
+            {healthChecking ? `Testing ${healthProgress.current}/${healthProgress.total}` : "Test All"}
+          </Button>
           <div className="relative" ref={relayMenuRef}>
             <Button
               size="sm"
@@ -825,6 +894,18 @@ export default function ProxyPoolsPage() {
                     Last tested: {formatDateTime(pool.lastTestedAt)}
                     {pool.lastError ? ` · ${pool.lastError}` : ""}
                   </p>
+                  {/* A pool leaking the real IP already shows as a failed test
+                      (red badge + lastError), so there is no extra IP row here. */}
+                  {pool.egressIp && pool.egressIpIsLocal !== true ? (
+                    <p className="text-[11px] mt-1">
+                      <span className="text-text-muted">IP: </span>
+                      <span className="font-mono text-text-main">{pool.egressIp}</span>
+                    </p>
+                  ) : !pool.egressIp && pool.egressIpCheckedAt && pool.isActive ? (
+                    <p className="text-[11px] text-text-muted mt-1">
+                      IP: unavailable{pool.egressIpError ? ` · ${pool.egressIpError}` : ""}
+                    </p>
+                  ) : null}
                   </div>
                 </div>
 
@@ -932,6 +1013,31 @@ export default function ProxyPoolsPage() {
             placeholder="my-relay"
             hint="Unique name for your Vercel project. Leave empty for auto-generated name."
           />
+          <Input
+            label="Number of relays"
+            type="number"
+            min={1}
+            max={10}
+            value={deployCount}
+            onChange={(e) => setDeployCount(e.target.value)}
+            disabled={deploying}
+            hint="Each relay is deployed separately with a -1, -2, … name suffix."
+          />
+          {deployProgress && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-black/5 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/5">
+              <span className="text-xs text-text-main">
+                {deployProgress.current}/{deployProgress.total} · {deployProgress.name}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { deployCancelRef.current = true; setDeployCancelRequested(true); }}
+                disabled={deployCancelRequested}
+              >
+                {deployCancelRequested ? "Stopping..." : "Stop"}
+              </Button>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               fullWidth
@@ -996,6 +1102,31 @@ export default function ProxyPoolsPage() {
             placeholder="my-relay"
             hint="Unique name for your Cloudflare Worker. Leave empty for auto-generated name."
           />
+          <Input
+            label="Number of relays"
+            type="number"
+            min={1}
+            max={10}
+            value={deployCount}
+            onChange={(e) => setDeployCount(e.target.value)}
+            disabled={deploying}
+            hint="Each relay is deployed separately with a -1, -2, … name suffix."
+          />
+          {deployProgress && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-black/5 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/5">
+              <span className="text-xs text-text-main">
+                {deployProgress.current}/{deployProgress.total} · {deployProgress.name}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { deployCancelRef.current = true; setDeployCancelRequested(true); }}
+                disabled={deployCancelRequested}
+              >
+                {deployCancelRequested ? "Stopping..." : "Stop"}
+              </Button>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               fullWidth
@@ -1060,6 +1191,31 @@ export default function ProxyPoolsPage() {
             placeholder="deno-relay"
             hint="Unique app name. Leave empty for auto-generated name."
           />
+          <Input
+            label="Number of relays"
+            type="number"
+            min={1}
+            max={10}
+            value={deployCount}
+            onChange={(e) => setDeployCount(e.target.value)}
+            disabled={deploying}
+            hint="Each relay is deployed separately with a -1, -2, … name suffix."
+          />
+          {deployProgress && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-black/5 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/5">
+              <span className="text-xs text-text-main">
+                {deployProgress.current}/{deployProgress.total} · {deployProgress.name}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { deployCancelRef.current = true; setDeployCancelRequested(true); }}
+                disabled={deployCancelRequested}
+              >
+                {deployCancelRequested ? "Stopping..." : "Stop"}
+              </Button>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               fullWidth
@@ -1116,6 +1272,31 @@ export default function ProxyPoolsPage() {
             placeholder="netlify-relay"
             hint="Unique site name (lowercase letters, numbers, hyphens). Your relay URL will be https://site-name.netlify.app/.netlify/functions/relay"
           />
+          <Input
+            label="Number of relays"
+            type="number"
+            min={1}
+            max={10}
+            value={deployCount}
+            onChange={(e) => setDeployCount(e.target.value)}
+            disabled={deploying}
+            hint="Each relay is deployed separately with a -1, -2, … name suffix."
+          />
+          {deployProgress && (
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-black/5 bg-black/[0.02] px-3 py-2 dark:border-white/10 dark:bg-white/5">
+              <span className="text-xs text-text-main">
+                {deployProgress.current}/{deployProgress.total} · {deployProgress.name}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { deployCancelRef.current = true; setDeployCancelRequested(true); }}
+                disabled={deployCancelRequested}
+              >
+                {deployCancelRequested ? "Stopping..." : "Stop"}
+              </Button>
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <Button
               fullWidth

@@ -10,6 +10,7 @@ import { APIKEY_PROVIDERS } from "@/shared/constants/config";
 import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompatibleProvider, isAnthropicCompatibleProvider, isCustomEmbeddingProvider } from "@/shared/constants/providers";
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { toProviderConnectionResponse } from "@/lib/providerConnectionResponse";
+import { randomProxyPool } from "@/lib/network/connectionProxyConstants.js";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +38,11 @@ async function normalizeProxyPoolId(proxyPoolId) {
   const normalizedId = String(proxyPoolId).trim();
   if (!normalizedId) {
     return { proxyPoolId: null };
+  }
+
+  // "__random__" is a mode resolved per request, not a pool row.
+  if (normalizedId === randomProxyPool) {
+    return { proxyPoolId: normalizedId };
   }
 
   const proxyPool = await getProxyPoolById(normalizedId);

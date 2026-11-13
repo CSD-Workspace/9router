@@ -26,6 +26,8 @@ import { resolveQoderCredentials } from "./qoderModels.js";
 import { getGlmUsage } from "./usage/glm.js";
 import { getCommandCodeUsage } from "./usage/commandcode.js";
 import { getSyntheticUsage } from "./usage/synthetic.js";
+import { getAgentrouterUsage } from "./usage/agentrouter.js";
+import { isNewApiAggregatorBalanceConnection, getNewApiAggregatorUsage } from "./newApiAggregatorQuotaFetcher.js";
 import {
   getIflowUsage,
   getOllamaUsage,
@@ -74,6 +76,8 @@ const USAGE_HANDLERS = {
   cursor: (c) => getCursorUsage(c.accessToken, c.providerSpecificData, c.proxyOptions),
   // OAuth WorkOS JWT (workos: prefix) or plain ClinePass API key — same usage-limits URL.
   clinepass: (c) => getClinepassUsage(c.accessToken, c.apiKey, c.proxyOptions),
+  agentrouter: (c) => getAgentrouterUsage(c, c.proxyOptions),
+  ar: (c) => getAgentrouterUsage(c, c.proxyOptions),
 };
 
 // Qoder intl/CN share one usage path: PATs must be exchanged to a job token
@@ -92,8 +96,15 @@ export async function getUsageForProvider(connection, proxyOptions = null, optio
   };
 
   const handler = USAGE_HANDLERS[provider];
-  if (!handler) return { message: `Usage API not implemented for ${provider}` };
+  if (!handler) {
+    if (isNewApiAggregatorBalanceConnection(connection)) {
+      return await getNewApiAggregatorUsage(connection, proxyOptions);
+    }
+    return { message: `Usage API not implemented for ${provider}` };
+  }
   return await handler({
+    id: connection.id || connection.connectionId,
+    connectionId: connection.connectionId || connection.id,
     provider,
     authType: connection.authType,
     accessToken,

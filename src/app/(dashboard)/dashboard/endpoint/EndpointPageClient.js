@@ -19,7 +19,16 @@ import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
 import KeyAccessControls from "./components/KeyAccessControls";
-export default function APIPageClient({ machineId }) {
+export default function APIPageClient({ machineId, localUrls = [] }) {
+  // "Public": the address this browser is actually reaching the gateway through right
+  // now — LAN IP, reverse-proxy hostname or tunnel URL. Only knowable client-side.
+  const [publicUrl, setPublicUrl] = useState("/v1");
+
+  // Hydration fix: only touch window on the client. Until it lands the Local row
+  // shows the server-resolved LAN address, so the initial paint is already correct.
+  useEffect(() => {
+    if (typeof window !== "undefined") setPublicUrl(`${window.location.origin}/v1`);
+  }, []);
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -708,14 +717,12 @@ export default function APIPageClient({ machineId }) {
     });
   };
 
-  const [baseUrl, setBaseUrl] = useState("/v1");
-
-  // Hydration fix: Only access window on client side
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      setBaseUrl(`${window.location.origin}/v1`);
-    }
-  }, []);
+  // "Local": the server's own LAN IPv4, resolved server-side where the host
+  // interfaces are visible. If the host exposes no LAN address (IPv6-only,
+  // container), the address this browser already uses is the best answer left.
+  const localUrl = localUrls[0] || publicUrl;
+  const localUrlTitle =
+    localUrls.length > 1 ? `Detected addresses: ${localUrls.join(", ")}` : undefined;
 
   if (loading) {
     return (
@@ -726,7 +733,6 @@ export default function APIPageClient({ machineId }) {
     );
   }
 
-  const currentEndpoint = baseUrl;
 
   return (
     <div className="flex flex-col gap-8">
@@ -739,11 +745,21 @@ export default function APIPageClient({ machineId }) {
 
         {/* Endpoint rows */}
         <div className="flex flex-col gap-2">
-          {/* Local */}
+          {/* Local - the server's own LAN IPv4, so it works from another machine */}
           <EndpointRow
             label="Local"
-            url={currentEndpoint}
+            labelTitle={localUrlTitle}
+            url={localUrl}
             copyId="local_url"
+            copied={copied}
+            onCopy={copy}
+          />
+          {/* Public - whichever address this browser is using right now */}
+          <EndpointRow
+            label="Public"
+            labelTitle="The address you are reaching this dashboard through"
+            url={publicUrl}
+            copyId="public_url"
             copied={copied}
             onCopy={copy}
           />
@@ -1333,4 +1349,5 @@ export default function APIPageClient({ machineId }) {
 
 APIPageClient.propTypes = {
   machineId: PropTypes.string.isRequired,
+  localUrls: PropTypes.arrayOf(PropTypes.string),
 };

@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
 import { getProxyPoolById, updateProxyPool } from "@/models";
-import { testProxyUrl } from "@/lib/network/proxyTest";
+import {
+  getDirectEgressIp,
+  getProxyEgressIp,
+  getRelayEgressIp,
+  testProxyUrl,
+} from "@/lib/network/proxyTest";
 import { fetch as undiciFetch } from "undici";
+
+function isRelayPool(proxyPool) {
+  return proxyPool?.type === "vercel"
+    || proxyPool?.type === "cloudflare"
+    || proxyPool?.type === "deno"
+    || proxyPool?.type === "netlify";
+}
 
 async function testVercelRelay(relayUrl, timeoutMs = 10000) {
   const controller = new AbortController();
@@ -43,25 +55,55 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: "Proxy pool not found" }, { status: 404 });
     }
 
-    const result = proxyPool.type === "vercel" || proxyPool.type === "cloudflare" || proxyPool.type === "deno" || proxyPool.type === "netlify"
+    const isRelay = isRelayPool(proxyPool);
+    const result = isRelay
       ? await testVercelRelay(proxyPool.proxyUrl)
       : await testProxyUrl({ proxyUrl: proxyPool.proxyUrl });
-    const now = new Date().toISOString();
 
-    await updateProxyPool(id, {
-      testStatus: result.ok ? "active" : "error",
+    // Read the address the pool actually exits from. Best-effort: a pool can be
+    // perfectly usable while the echo service is blocked or slow, so this never
+    // changes the pass/fail verdict.
+    const egress = isRelay
+      ? await getRelayEgressIp({ relayUrl: proxyPool.proxyUrl })
+      : await getProxyEgressIp({ proxyUrl: proxyPool.proxyUrl });
+    const egressIp = egress?.ok ? egress.ip : null;
+
+    // A pool that exits from this machine's own IPv4 is not masking anything, so
+    // the test fails outright. Only claim that when the direct lookup succeeded;
+    // an unavailable direct address must never turn into a false "same IP".
+    const directIp = egressIp ? await getDirectEgressIp() : null;
+    const egressIpIsLocal = Boolean(egressIp && directIp && directIp === egressIp);
+
+    const egressIpError = egressIp ? null : (egress?.error || "IP lookup failed");
+    const maskingError = egressIpIsLocal
+      ? `Proxy is not masking your IP (egress ${egressIp} is this machine's address)`
+      : null;
+
+    const ok = result.ok && !egressIpIsLocal;
+    const now = new Date().toISOString();
+    const updates = {
+      testStatus: ok ? "active" : "error",
       lastTestedAt: now,
-      lastError: result.ok ? null : (result.error || `Proxy test failed with status ${result.status}`),
-      isActive: result.ok,
-    });
+      lastError: result.ok ? maskingError : (result.error || `Proxy test failed with status ${result.status}`),
+      isActive: ok,
+      egressIp,
+      egressIpCheckedAt: now,
+      egressIpError,
+      egressIpIsLocal: egressIp ? egressIpIsLocal : null,
+    };
+
+    await updateProxyPool(id, updates);
 
     return NextResponse.json({
-      ok: result.ok,
+      ok,
       status: result.status,
       statusText: result.statusText || null,
-      error: result.error || null,
+      error: updates.lastError,
       elapsedMs: result.elapsedMs || 0,
       testedAt: now,
+      egressIp,
+      egressIpIsLocal: updates.egressIpIsLocal,
+      egressIpError,
     });
   } catch (error) {
     console.log("Error testing proxy pool:", error);

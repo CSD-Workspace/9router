@@ -46,11 +46,21 @@ export async function handleChat(request, clientRawRequest = null) {
   // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {
     const url = new URL(request.url);
+    const baseId = request.headers.get("x-request-id") || request.headers.get("x-client-request-id");
+    const requestId = baseId
+      ? `${baseId}-${Math.random().toString(36).slice(2, 7)}`
+      : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
     clientRawRequest = {
       endpoint: url.pathname,
       body,
-      headers: Object.fromEntries(request.headers.entries())
+      headers: Object.fromEntries(request.headers.entries()),
+      requestId,
     };
+  } else if (!clientRawRequest.requestId) {
+    const baseId = clientRawRequest.headers?.["x-request-id"] || clientRawRequest.headers?.["x-client-request-id"];
+    clientRawRequest.requestId = baseId
+      ? `${baseId}-${Math.random().toString(36).slice(2, 7)}`
+      : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   }
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.
@@ -76,14 +86,18 @@ export async function handleChat(request, clientRawRequest = null) {
   // Enforce API key if enabled in settings
   const settings = await getSettings();
   if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+    const { hasValidCliToken } = await import("@/dashboardGuard.js");
+    const isInternalCli = await hasValidCliToken(request);
+    if (!isInternalCli) {
+      if (!apiKey) {
+        log.warn("AUTH", "Missing API key (requireApiKey=true)");
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+      }
+      const valid = await isValidApiKey(apiKey);
+      if (!valid) {
+        log.warn("AUTH", "Invalid API key (requireApiKey=true)");
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+      }
     }
   }
 

@@ -10,6 +10,7 @@ import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLin
 import { saveRequestDetail } from "@/lib/usageDb.js";
 import { SSE_HEADERS_CORS as SSE_HEADERS } from "../../utils/sseConstants.js";
 import { upstreamResponseHeaders } from "../../utils/upstreamHeaders.js";
+import { createThinkingStripperTransformStream } from "../../utils/thinkstrip.js";
 
 // Codex returns Responses API SSE → which client format to translate INTO, by request sourceFormat.
 // Gemini-family all map to ANTIGRAVITY decoder; unknown sources fall back to OPENAI.
@@ -24,7 +25,7 @@ const CODEX_SOURCE_TO_TARGET = {
 /**
  * Determine which SSE transform stream to use based on provider/format.
  */
-function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, credentials }) {
+function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, credentials, requestId }) {
   const isDroidCLI = userAgent?.toLowerCase().includes("droid") || userAgent?.toLowerCase().includes("codex-cli");
   // Responses-API providers (e.g. codex) emit Responses SSE → translate into client format
   const isResponsesProvider = PROVIDERS[provider]?.format === FORMATS.OPENAI_RESPONSES;
@@ -32,23 +33,23 @@ function buildTransformStream({ provider, sourceFormat, targetFormat, userAgent,
 
   if (needsCodexTranslation) {
     const codexTarget = CODEX_SOURCE_TO_TARGET[sourceFormat] || FORMATS.OPENAI;
-    return createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, codexTarget, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, credentials);
+    return createSSETransformStreamWithLogger(FORMATS.OPENAI_RESPONSES, codexTarget, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, credentials, requestId);
   }
 
   if (needsTranslation(targetFormat, sourceFormat)) {
-    return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, credentials);
+    return createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, reqLogger, toolNameMap, model, connectionId, body, onStreamComplete, apiKey, customToolNames, credentials, requestId);
   }
 
   // The passthrough path has no format translation, so the fingerprint's tool
   // rename map (read -> read_client) has to be handed over explicitly —
   // otherwise the client receives a call to a tool it never declared (#4986).
-  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, toolNameMap);
+  return createPassthroughStreamWithLogger(provider, reqLogger, model, connectionId, body, onStreamComplete, apiKey, toolNameMap, requestId);
 }
 
 /**
  * Handle streaming response — pipe provider SSE through transform stream to client.
  */
-export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, credentials }) {
+export async function handleStreamingResponse({ providerResponse, provider, model, sourceFormat, targetFormat, userAgent, body, stream, translatedBody, finalBody, requestStartTime, connectionId, proxyName, apiKey, clientRawRequest, onRequestSuccess, reqLogger, toolNameMap, customToolNames, streamController, onStreamComplete, streamDetailId, pxpipe, reqTag, log, credentials, requestId }) {
   if (onRequestSuccess) {
     Promise.resolve()
       .then(onRequestSuccess)
@@ -84,7 +85,7 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     };
   }
 
-  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, credentials });
+  const transformStream = buildTransformStream({ provider, sourceFormat, targetFormat, userAgent, reqLogger, toolNameMap, customToolNames, model, connectionId, body, onStreamComplete, apiKey, credentials, requestId });
 
   // Terminal bytes when the stream aborts after HTTP 200 was already sent, so the
   // client sees a real error instead of a silently truncated stream.
@@ -98,12 +99,31 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
   const transformedBody = pipeWithDisconnect(providerResponse, transformStream, streamController, onAbortTerminal, stallTimeoutMs);
 
   saveRequestDetail(buildRequestDetail({
-    provider, model, connectionId,
+    provider, model, connectionId, proxyName,
+    startedAt: new Date(requestStartTime).toISOString(),
+    endedAt: new Date().toISOString(),
+    durationMs: Date.now() - requestStartTime,
     latency: { ttft: 0, total: Date.now() - requestStartTime },
     tokens: { prompt_tokens: 0, completion_tokens: 0 },
+    clientRawRequest: clientRawRequest || null,
     request: extractRequestConfig(body, stream),
     providerRequest: finalBody || translatedBody || null,
-    providerResponse: "[Streaming - raw response not captured]",
+    providerResponse: {
+      _streamed: true,
+      _format: "sse-json",
+      _stage: "provider_response",
+      summary: {
+        object: "chat.completion",
+        choices: [
+          {
+            message: { role: "assistant", content: "[Streaming in progress...]" },
+            finish_reason: null
+          }
+        ],
+        usage: { prompt_tokens: 0, completion_tokens: 0 },
+        _streamed: true
+      }
+    },
     response: { content: "[Streaming in progress...]", thinking: null, type: "streaming" },
     pxpipe,
     status: "success"
@@ -111,16 +131,21 @@ export async function handleStreamingResponse({ providerResponse, provider, mode
     console.error("[RequestDetail] Failed to save streaming request:", err.message);
   });
 
+  const shouldStripThinking = (provider === "agentrouter" || provider === "ar") && sourceFormat === FORMATS.OPENAI;
+  const finalStream = shouldStripThinking
+    ? transformedBody.pipeThrough(createThinkingStripperTransformStream())
+    : transformedBody;
+
   return {
     success: true,
-    response: new Response(transformedBody, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
+    response: new Response(finalStream, { headers: { ...SSE_HEADERS, ...upstreamResponseHeaders(providerResponse.headers) } })
   };
 }
 
 /**
  * Build onStreamComplete callback for streaming usage tracking.
  */
-export function buildOnStreamComplete({ provider, model, connectionId, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log }) {
+export function buildOnStreamComplete({ provider, model, connectionId, proxyName, apiKey, requestStartTime, body, stream, finalBody, translatedBody, clientRawRequest, pxpipe, reqTag, log }) {
   const streamDetailId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
   const onStreamComplete = (contentObj, usage, ttftAt) => {
@@ -128,19 +153,63 @@ export function buildOnStreamComplete({ provider, model, connectionId, apiKey, r
       ttft: ttftAt ? ttftAt - requestStartTime : Date.now() - requestStartTime,
       total: Date.now() - requestStartTime
     };
-    const safeContent = contentObj?.content || "[Empty streaming response]";
     const safeThinking = contentObj?.thinking || null;
+    const toolCalls = contentObj?.toolCalls?.length
+      ? contentObj.toolCalls.map((c, i) => ({
+          id: c.id || `call_${i}`,
+          type: "function",
+          function: { name: c.name || "", arguments: c.arguments || "" }
+        }))
+      : null;
+    // Fall back to a readable tool-call summary when there is no text content
+    // (tool-call-only responses) so the log never shows just a placeholder.
+    const safeContent = contentObj?.content
+      || (toolCalls ? toolCalls.map((c) => `[tool_call] ${c.function.name}(${c.function.arguments})`).join("\n") : "")
+      || "[Empty streaming response]";
+
+    const isStreamError = !!contentObj?.error;
+    const streamStatus = isStreamError ? "error" : "success";
+    const streamFinishReason = isStreamError ? "failed" : "stop";
 
     saveRequestDetail(buildRequestDetail({
-      provider, model, connectionId,
+      provider, model, connectionId, proxyName,
+      startedAt: new Date(requestStartTime).toISOString(),
+      endedAt: new Date().toISOString(),
+      durationMs: latency.total,
       latency,
       tokens: usage || { prompt_tokens: 0, completion_tokens: 0 },
+      clientRawRequest: clientRawRequest || null,
       request: extractRequestConfig(body, stream),
       providerRequest: finalBody || translatedBody || null,
-      providerResponse: safeContent,
-      response: { content: safeContent, thinking: safeThinking, type: "streaming" },
+      providerResponse: {
+        _streamed: true,
+        _format: "sse-json",
+        _stage: "provider_response",
+        summary: {
+          object: "chat.completion",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: safeContent,
+                ...(safeThinking ? { reasoning_content: safeThinking } : {}),
+                ...(toolCalls ? { tool_calls: toolCalls } : {})
+              },
+              finish_reason: streamFinishReason
+            }
+          ],
+          usage: usage || { prompt_tokens: 0, completion_tokens: 0 },
+          _streamed: true
+        }
+      },
+      response: {
+        content: safeContent,
+        thinking: safeThinking,
+        type: "streaming",
+        ...(isStreamError ? { error: contentObj.error.message || contentObj.error } : {})
+      },
       pxpipe,
-      status: "success"
+      status: streamStatus
     }, { id: streamDetailId })).catch(err => {
       console.error("[RequestDetail] Failed to update streaming content:", err.message);
     });

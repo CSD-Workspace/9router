@@ -96,7 +96,8 @@ ProviderNode.propTypes = {
 
 // Center 9Router node — pulse/glow on card only (no expanding rings)
 function RouterNode({ data }) {
-  const powering = (data.activeCount || 0) > 0;
+  const activeCount = data.activeCount || 0;
+  const powering = activeCount > 0;
   return (
     <div
       className={`relative z-[1] flex items-center justify-center px-5 py-3 rounded-xl border-2 min-w-[130px] ${
@@ -120,11 +121,9 @@ function RouterNode({ data }) {
       <span className={`text-sm font-bold ${powering ? "topology-router-label text-yellow-300" : "text-primary"}`}>
         9Router
       </span>
-      {data.activeCount > 0 && (
-        <span className="ml-2 px-1.5 py-0.5 rounded-full bg-yellow-400 text-black text-xs font-bold topology-router-badge">
-          {data.activeCount}
-        </span>
-      )}
+      <span className="ml-2 px-1.5 py-0.5 rounded-full bg-yellow-400 text-black text-xs font-bold topology-router-badge">
+        {activeCount}
+      </span>
     </div>
   );
 }
@@ -260,7 +259,7 @@ const nodeTypes = { provider: ProviderNode, router: RouterNode };
 const edgeTypes = { topology: TopologyEdge };
 
 // Place N nodes evenly along an ellipse around the router center.
-function buildLayout(providers, activeSet, lastSet, errorSet) {
+function buildLayout(providers, activeSet, lastSet, errorSet, activeCount = 0) {
   const nodeW = 180;
   const nodeH = 30;
   const routerW = 120;
@@ -275,7 +274,7 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
   const ry = Math.max(200, rx * 0.55); // ellipse ratio ~0.55
   if (count === 0) {
     return {
-      nodes: [{ id: "router", type: "router", position: { x: 0, y: 0 }, data: { activeCount: 0 }, draggable: false }],
+      nodes: [{ id: "router", type: "router", position: { x: 0, y: 0 }, data: { activeCount }, draggable: false }],
       edges: [],
     };
   }
@@ -287,7 +286,7 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
     id: "router",
     type: "router",
     position: { x: -routerW / 2, y: -routerH / 2 },
-    data: { activeCount: activeSet.size },
+    data: { activeCount },
     draggable: false,
   });
 
@@ -354,7 +353,11 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
   return { nodes, edges };
 }
 
-export default function ProviderTopology({ providers = [], activeRequests = [], lastProvider = "", errorProvider = "" }) {
+export default function ProviderTopology({ providers = [], activeRequests = [], activeRequestCount, lastProvider = "", errorProvider = "" }) {
+  const totalActiveCount = typeof activeRequestCount === "number"
+    ? activeRequestCount
+    : (Array.isArray(activeRequests) ? activeRequests.length : 0);
+
   // Serialize to stable string keys so useMemo only re-runs when values actually change
   const activeKey = useMemo(
     () => activeRequests.map((r) => r.provider?.toLowerCase()).filter(Boolean).sort().join(","),
@@ -399,8 +402,8 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
   }, [rawActiveSet, tick]);
 
   const { nodes, edges } = useMemo(
-    () => buildLayout(providers, activeSet, lastSet, errorSet),
-    [providers, activeSet, lastSet, errorSet]
+    () => buildLayout(providers, activeSet, lastSet, errorSet, totalActiveCount),
+    [providers, activeSet, lastSet, errorSet, totalActiveCount]
   );
 
   // Stable key — only remount when provider list changes
@@ -478,10 +481,12 @@ ProviderTopology.propTypes = {
     name: PropTypes.string,
   })),
   activeRequests: PropTypes.arrayOf(PropTypes.shape({
+    requestId: PropTypes.string,
     provider: PropTypes.string,
     model: PropTypes.string,
     account: PropTypes.string,
   })),
+  activeRequestCount: PropTypes.number,
   lastProvider: PropTypes.string,
   errorProvider: PropTypes.string,
 };

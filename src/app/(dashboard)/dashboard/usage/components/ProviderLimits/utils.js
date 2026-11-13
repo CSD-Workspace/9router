@@ -759,6 +759,27 @@ export function parseQuotaData(provider, data) {
         }
         break;
 
+      case "agentrouter":
+      case "ar":
+        if (data.quotas) {
+          Object.entries(data.quotas).forEach(([name, quota]) => {
+            const remaining = Math.max(0, Number(quota?.remaining ?? 0));
+            const total = Number(quota?.total) || remaining;
+            normalizedQuotas.push({
+              name: quota.displayName || name,
+              used: quota.used || 0,
+              total,
+              remaining,
+              remainingPercentage: quota.remainingPercentage ?? (remaining > 0 ? 100 : 0),
+              resetAt: quota.resetAt || null,
+              neverExpires: quota.neverExpires ?? true,
+              isCreditBalance: true,
+              currency: quota.currency || "USD",
+            });
+          });
+        }
+        break;
+
       case "cursor":
         // Plan spend is USD (cents from GetCurrentPeriodUsage). Forward
         // remainingPercentage only — do not pass absolute remaining (UI treats it as %).
@@ -865,18 +886,26 @@ export function parseQuotaData(provider, data) {
         break;
 
       default:
-        // Generic fallback for unknown providers
+        // Generic fallback for unknown providers (including custom compatible New-API nodes)
         if (data.quotas) {
           Object.entries(data.quotas).forEach(([name, quota]) => {
+            const remaining = quota.remaining !== undefined ? Math.max(0, Number(quota.remaining)) : undefined;
+            const isCredit = quota.isCreditBalance ?? (remaining !== undefined);
+            const total = Number(quota?.total) || (isCredit && remaining !== undefined ? remaining : 0) || 0;
             normalizedQuotas.push({
-              name: quota.name || name,
+              name: quota.displayName || quota.name || name,
               used: quota.used || 0,
-              total: quota.total || 0,
+              total,
+              remaining,
               percentage: quota.percentage,
               colorPercentage: quota.colorPercentage,
               percentageIsUsed: quota.percentageIsUsed === true,
+              remainingPercentage: quota.remainingPercentage ?? (remaining !== undefined ? (remaining > 0 ? 100 : 0) : undefined),
               resetAt: quota.resetAt || null,
+              neverExpires: quota.neverExpires ?? isCredit,
               emptyMessage: quota.emptyMessage || null,
+              isCreditBalance: isCredit,
+              currency: quota.currency || "USD",
             });
           });
         }

@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 function redactDetails(details) {
   return (details || []).map((d) => {
     const redacted = { ...d };
-    for (const key of ["request", "providerRequest", "providerResponse", "response"]) {
+    for (const key of ["clientRawRequest", "request", "providerRequest", "providerResponse", "response"]) {
       if (redacted[key] !== undefined) {
         redacted[key] = { redacted: true };
       }
@@ -23,6 +23,7 @@ describe("request-details redaction", () => {
       timestamp: "2026-08-05T00:00:00Z",
       status: "success",
       tokens: { prompt_tokens: 10, completion_tokens: 5 },
+      clientRawRequest: { endpoint: "/v1/chat/completions", body: { messages: [{ role: "user", content: "secret prompt" }] } },
       request: { messages: [{ role: "user", content: "secret prompt" }] },
       providerRequest: { messages: [{ role: "user", content: "secret prompt" }] },
       providerResponse: { choices: [{ message: { content: "secret answer" } }] },
@@ -33,6 +34,7 @@ describe("request-details redaction", () => {
     expect(out.provider).toBe("opencode");
     expect(out.model).toBe("deepseek-v4-flash-free");
     expect(out.tokens).toEqual({ prompt_tokens: 10, completion_tokens: 5 });
+    expect(out.clientRawRequest).toEqual({ redacted: true });
     expect(out.request).toEqual({ redacted: true });
     expect(out.providerRequest).toEqual({ redacted: true });
     expect(out.providerResponse).toEqual({ redacted: true });

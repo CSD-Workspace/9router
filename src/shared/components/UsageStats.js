@@ -293,6 +293,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           return {
             ...prev,
             activeRequests: data.activeRequests,
+            activeRequestCount: typeof data.activeRequestCount === "number" ? data.activeRequestCount : (data.activeRequests?.length ?? 0),
             recentRequests: data.recentRequests,
             errorProvider: data.errorProvider,
             pending: data.pending,
@@ -477,6 +478,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           <ProviderTopology
             providers={providers}
             activeRequests={stats.activeRequests || []}
+            activeRequestCount={stats.activeRequestCount ?? (stats.activeRequests || []).length}
             lastProvider={stats.recentRequests?.[0]?.provider || ""}
             errorProvider={stats.errorProvider || ""}
           />

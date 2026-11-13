@@ -27,6 +27,7 @@ if (!global._pendingTimers) global._pendingTimers = {};
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
+if (!global._activeRequestsMap) global._activeRequestsMap = new Map();
 
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
@@ -34,6 +35,7 @@ const pendingTimers = global._pendingTimers;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 const statsEmitTimers = global._statsEmitTimers;
+const activeRequestsMap = global._activeRequestsMap;
 
 export const statsEmitter = global._statsEmitter;
 
@@ -151,67 +153,191 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false) {
-  const modelKey = provider ? `${model} (${provider})` : model;
-  const timerKey = `${connectionId}|${modelKey}`;
+export function registerActiveRequest({
+  requestId,
+  model,
+  provider,
+  connectionId,
+  apiKey,
+  startedAt,
+  status = "processing"
+} = {}) {
+  const finalRequestId = requestId || `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
+  // Prevent duplicate registration
+  if (activeRequestsMap.has(finalRequestId)) {
+    return finalRequestId;
+  }
+
+  const cleanModel = model || "unknown";
+  const cleanProvider = provider || "unknown";
+  const modelKey = cleanProvider ? `${cleanModel} (${cleanProvider})` : cleanModel;
+  const apiKeyMasked = maskApiKey(apiKey);
+
+  const entry = {
+    requestId: finalRequestId,
+    model: cleanModel,
+    provider: cleanProvider,
+    connectionId: connectionId || null,
+    apiKeyMasked,
+    startedAt: startedAt || new Date().toISOString(),
+    status,
+    modelKey,
+  };
+
+  activeRequestsMap.set(finalRequestId, entry);
+
+  // Update legacy pending counters for table views
   if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
-  pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
-  if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
+  pendingRequests.byModel[modelKey] += 1;
 
   if (connectionId) {
     if (!pendingRequests.byAccount[connectionId]) pendingRequests.byAccount[connectionId] = {};
     if (!pendingRequests.byAccount[connectionId][modelKey]) pendingRequests.byAccount[connectionId][modelKey] = 0;
-    pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] + (started ? 1 : -1));
-    if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
-      delete pendingRequests.byAccount[connectionId][modelKey];
-      if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) {
-        delete pendingRequests.byAccount[connectionId];
-      }
-    }
+    pendingRequests.byAccount[connectionId][modelKey] += 1;
   }
 
-  if (started) {
-    clearTimeout(pendingTimers[timerKey]);
-    pendingTimers[timerKey] = setTimeout(() => {
-      delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
-      }
-      scheduleStatsEvent("pending");
-    }, PENDING_TIMEOUT_MS);
-  } else {
+  // Safety timer to prevent leaking if host or client hangs without cleanup (10 minutes)
+  const timerKey = `active:${finalRequestId}`;
+  pendingTimers[timerKey] = setTimeout(() => {
+    unregisterActiveRequest(finalRequestId);
+  }, 10 * 60 * 1000);
+  pendingTimers[timerKey]?.unref?.();
+
+  scheduleStatsEvent("pending");
+  return finalRequestId;
+}
+
+export function unregisterActiveRequest(requestId, { error = false, provider } = {}) {
+  if (!requestId || !activeRequestsMap.has(requestId)) {
+    return;
+  }
+
+  const entry = activeRequestsMap.get(requestId);
+  activeRequestsMap.delete(requestId);
+
+  const timerKey = `active:${requestId}`;
+  if (pendingTimers[timerKey]) {
     clearTimeout(pendingTimers[timerKey]);
     delete pendingTimers[timerKey];
   }
 
-  if (!started && error && provider) {
-    lastErrorProvider.provider = provider.toLowerCase();
+  const modelKey = entry.modelKey;
+  if (pendingRequests.byModel[modelKey]) {
+    pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] - 1);
+    if (pendingRequests.byModel[modelKey] === 0) {
+      delete pendingRequests.byModel[modelKey];
+    }
+  }
+
+  if (entry.connectionId && pendingRequests.byAccount[entry.connectionId]?.[modelKey]) {
+    pendingRequests.byAccount[entry.connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[entry.connectionId][modelKey] - 1);
+    if (pendingRequests.byAccount[entry.connectionId][modelKey] === 0) {
+      delete pendingRequests.byAccount[entry.connectionId][modelKey];
+      if (Object.keys(pendingRequests.byAccount[entry.connectionId]).length === 0) {
+        delete pendingRequests.byAccount[entry.connectionId];
+      }
+    }
+  }
+
+  const errProvider = provider || entry.provider;
+  if (error && errProvider) {
+    lastErrorProvider.provider = errProvider.toLowerCase();
     lastErrorProvider.ts = Date.now();
   }
 
-  // [PENDING] console line removed; lifecycle is visible via "▶" and "📊 done" lines
   scheduleStatsEvent("pending");
+}
+
+export function trackPendingRequest(modelOrOptions, provider, connectionId, started, error = false, extra = {}) {
+  // Support options object form: trackPendingRequest({ requestId, model, provider, connectionId, started, error, apiKey, ... })
+  if (modelOrOptions && typeof modelOrOptions === "object") {
+    const opts = modelOrOptions;
+    if (opts.started) {
+      return registerActiveRequest(opts);
+    } else {
+      return unregisterActiveRequest(opts.requestId, { error: opts.error, provider: opts.provider });
+    }
+  }
+
+  // Positional form: trackPendingRequest(model, provider, connectionId, started, error, extra)
+  const model = modelOrOptions;
+  if (started) {
+    return registerActiveRequest({
+      requestId: extra?.requestId,
+      model,
+      provider,
+      connectionId,
+      apiKey: extra?.apiKey,
+      startedAt: extra?.startedAt,
+      status: extra?.status,
+    });
+  } else {
+    if (extra?.requestId) {
+      unregisterActiveRequest(extra.requestId, { error, provider });
+    } else {
+      // Find matching entry in activeRequestsMap if no explicit requestId
+      let foundId = null;
+      for (const [id, req] of activeRequestsMap.entries()) {
+        if (req.model === model && req.provider === provider) {
+          if (!connectionId || req.connectionId === connectionId) {
+            foundId = id;
+            break;
+          }
+        }
+      }
+      if (foundId) {
+        unregisterActiveRequest(foundId, { error, provider });
+      } else {
+        // Fallback for tests or legacy callers that don't have activeRequestsMap entry
+        const cleanModel = model || "unknown";
+        const cleanProvider = provider || "unknown";
+        const modelKey = cleanProvider ? `${cleanModel} (${cleanProvider})` : cleanModel;
+        if (pendingRequests.byModel[modelKey]) {
+          pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] - 1);
+          if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
+        }
+        if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey]) {
+          pendingRequests.byAccount[connectionId][modelKey] = Math.max(0, pendingRequests.byAccount[connectionId][modelKey] - 1);
+          if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
+            delete pendingRequests.byAccount[connectionId][modelKey];
+            if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) {
+              delete pendingRequests.byAccount[connectionId];
+            }
+          }
+        }
+        if (error && cleanProvider) {
+          lastErrorProvider.provider = cleanProvider.toLowerCase();
+          lastErrorProvider.ts = Date.now();
+        }
+        scheduleStatsEvent("pending");
+      }
+    }
+  }
 }
 
 export async function getActiveRequests() {
   const activeRequests = [];
   const connectionMap = await getConnectionMapCached();
 
-  for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
-    for (const [modelKey, count] of Object.entries(models)) {
-      if (count > 0) {
-        const accountName = connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
-        const match = modelKey.match(/^(.*) \((.*)\)$/);
-        activeRequests.push({
-          model: match ? match[1] : modelKey,
-          provider: match ? match[2] : "unknown",
-          account: accountName, count,
-        });
-      }
-    }
+  for (const item of activeRequestsMap.values()) {
+    const accountName = item.connectionId
+      ? (connectionMap[item.connectionId] || `Account ${item.connectionId.slice(0, 8)}...`)
+      : undefined;
+
+    activeRequests.push({
+      requestId: item.requestId,
+      provider: item.provider,
+      model: item.model,
+      account: accountName,
+      connectionId: item.connectionId || undefined,
+      apiKeyMasked: item.apiKeyMasked || undefined,
+      startedAt: item.startedAt,
+      status: item.status || "processing",
+    });
   }
+
+  const activeRequestCount = activeRequests.length;
 
   await ensureRingInitialized();
   const seen = new Set();
@@ -237,7 +363,7 @@ export async function getActiveRequests() {
     .slice(0, 20);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
-  return { activeRequests, recentRequests, errorProvider };
+  return { activeRequests, activeRequestCount, recentRequests, errorProvider };
 }
 
 export async function saveRequestUsage(entry) {
@@ -403,24 +529,28 @@ export async function getUsageStats(period = "all") {
     last10Minutes: [],
     pending: pendingRequests,
     activeRequests: [],
+    activeRequestCount: 0,
     recentRequests,
     errorProvider: (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "",
   };
 
-  // Active requests
-  for (const [connectionId, models] of Object.entries(pendingRequests.byAccount)) {
-    for (const [modelKey, count] of Object.entries(models)) {
-      if (count > 0) {
-        const accountName = connectionMap[connectionId] || `Account ${connectionId.slice(0, 8)}...`;
-        const match = modelKey.match(/^(.*) \((.*)\)$/);
-        stats.activeRequests.push({
-          model: match ? match[1] : modelKey,
-          provider: match ? match[2] : "unknown",
-          account: accountName, count,
-        });
-      }
-    }
+  // Active requests from in-flight tracker
+  for (const item of activeRequestsMap.values()) {
+    const accountName = item.connectionId
+      ? (connectionMap[item.connectionId] || `Account ${item.connectionId.slice(0, 8)}...`)
+      : undefined;
+    stats.activeRequests.push({
+      requestId: item.requestId,
+      provider: item.provider,
+      model: item.model,
+      account: accountName,
+      connectionId: item.connectionId || undefined,
+      apiKeyMasked: item.apiKeyMasked || undefined,
+      startedAt: item.startedAt,
+      status: item.status || "processing",
+    });
   }
+  stats.activeRequestCount = stats.activeRequests.length;
 
   // last10Minutes — query 10min window
   const now = new Date();

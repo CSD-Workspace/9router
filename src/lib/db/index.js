@@ -60,6 +60,7 @@ export {
 // Usage
 export {
   statsEmitter, trackPendingRequest, getActiveRequests,
+  registerActiveRequest, unregisterActiveRequest,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
   appendRequestLog, getRecentLogs,
 } from "./repos/usageRepo.js";
@@ -67,6 +68,8 @@ export {
 // Request details
 export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  getDistinctModels, getDistinctStatuses,
+  getRequestDetailsStats, clearRequestDetails, deleteRequestDetailsBefore,
 } from "./repos/requestDetailsRepo.js";
 
 // Export/import full DB

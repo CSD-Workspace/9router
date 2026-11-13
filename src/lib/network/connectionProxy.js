@@ -1,9 +1,27 @@
-import { getProxyPoolById } from "@/models";
+import { getProxyPoolById, getProxyPools } from "@/models";
+import { randomProxyPool } from "./connectionProxyConstants.js";
+
+export { randomProxyPool };
 
 // Safely normalize any value into a trimmed string.
 function normalizeString(value) {
   if (value === undefined || value === null) return "";
   return String(value).trim();
+}
+
+/**
+ * Pick a random active pool that actually has a URL.
+ *
+ * Returns null when the pool list has nothing usable. The caller then treats the
+ * request as unproxied: with no active pool there is nothing to rotate through,
+ * so falling back to the machine's own address keeps the provider reachable
+ * instead of failing every request.
+ */
+async function pickRandomPoolId() {
+  const pools = await getProxyPools({ isActive: true });
+  const usable = pools.filter((pool) => normalizeString(pool?.proxyUrl));
+  if (usable.length === 0) return null;
+  return usable[Math.floor(Math.random() * usable.length)].id;
 }
 
 // ─── Proxy pool rotation state (in-memory) ─────────────────────────
@@ -72,8 +90,15 @@ export async function resolveConnectionProxyConfig(
     );
 
     // "__none__" means explicitly disabled
-    const proxyPoolId =
+    let proxyPoolId =
       proxyPoolIdRaw === "__none__" ? "" : proxyPoolIdRaw;
+
+    // randomProxyPool means "draw a fresh active pool for this request".
+    // Resolving it here (rather than at the call sites) keeps chat, model
+    // listing, quota ping and STT on the same behaviour.
+    if (proxyPoolId === randomProxyPool) {
+      proxyPoolId = (await pickRandomPoolId()) || "";
+    }
 
     const legacy = normalizeLegacyProxy(providerSpecificData);
 

@@ -11,6 +11,8 @@ import {
   clampResponsesCallId,
   coerceResponsesArguments,
   coerceResponsesOutput,
+  normalizeResponsesTools,
+  normalizeResponsesToolChoice,
 } from "../formats/responsesApi.js";
 import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
@@ -328,6 +330,15 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
     }
     delete out.max_tokens;
     delete out.max_completion_tokens;
+
+    // Normalize tools even on the body.input path (prevent malformed declarations from reaching upstream)
+    if (out.tools !== undefined) {
+      out.tools = normalizeResponsesTools(out.tools);
+    }
+    if (out.tool_choice !== undefined) {
+      out.tool_choice = normalizeResponsesToolChoice(out.tool_choice);
+    }
+
     return out;
   }
 
@@ -426,22 +437,14 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   }
 
   // Convert tools format
-  if (body.tools && Array.isArray(body.tools)) {
-    result.tools = body.tools.map(tool => {
-      if (tool.type === OPENAI_BLOCK.FUNCTION) {
-        // Strict upstreams reject nameless/overlong tool declarations
-        const name = typeof tool.function?.name === "string" ? tool.function.name.trim() : "";
-        if (!name) return null;
-        return {
-          type: OPENAI_BLOCK.FUNCTION,
-          name: name.slice(0, MAX_TOOL_NAME_LEN),
-          description: String(tool.function.description || ""),
-          parameters: normalizeToolParameters(tool.function.parameters),
-          strict: tool.function.strict
-        };
-      }
-      return tool;
-    }).filter(Boolean);
+  if (body.tools !== undefined) {
+    result.tools = normalizeResponsesTools(body.tools);
+  }
+  if (body.tool_choice !== undefined) {
+    result.tool_choice = normalizeResponsesToolChoice(body.tool_choice);
+  }
+  if (body.parallel_tool_calls !== undefined) {
+    result.parallel_tool_calls = body.parallel_tool_calls;
   }
 
   // Pass through other relevant fields
@@ -461,6 +464,8 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
 
   return result;
 }
+
+export { normalizeResponsesTools, normalizeResponsesToolChoice, normalizeToolParameters };
 
 // Register both directions
 register(FORMATS.OPENAI_RESPONSES, FORMATS.OPENAI, openaiResponsesToOpenAIRequest, null);

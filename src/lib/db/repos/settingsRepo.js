@@ -44,6 +44,8 @@ const DEFAULT_SETTINGS = {
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,
   observabilityMaxJsonSize: 5,
+  // Auto-delete request log records older than N days (0 = never auto-clear)
+  requestLogsRetentionDays: 0,
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",

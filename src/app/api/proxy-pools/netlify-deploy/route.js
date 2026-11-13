@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { createProxyPool } from "@/models";
 import {
-  NETLIFY_API,
-  NETLIFY_FUNCTION_NAME,
+  netlifyApiBase,
+  netlifyFunctionName,
   buildIndexFile,
   buildRelayFunctionZip,
   buildRelayUrl,
@@ -40,7 +40,7 @@ export async function POST(request) {
     };
 
     // 1. Create site (name → <name>.netlify.app; random if taken → 422).
-    const siteRes = await fetch(`${NETLIFY_API}/sites`, {
+    const siteRes = await fetch(`${netlifyApiBase}/sites`, {
       method: "POST",
       headers,
       body: JSON.stringify({ name: siteName }),
@@ -67,12 +67,12 @@ export async function POST(request) {
     const { zip, sha256 } = buildRelayFunctionZip();
     const { content: indexContent, sha1 } = buildIndexFile();
 
-    const deployRes = await fetch(`${NETLIFY_API}/sites/${siteId}/deploys`, {
+    const deployRes = await fetch(`${netlifyApiBase}/sites/${siteId}/deploys`, {
       method: "POST",
       headers,
       body: JSON.stringify({
         files: { "/index.html": sha1 },
-        functions: { [NETLIFY_FUNCTION_NAME]: sha256 },
+        functions: { [netlifyFunctionName]: sha256 },
       }),
     });
 
@@ -94,7 +94,7 @@ export async function POST(request) {
     const requiredFunctions = new Set(deploy.required_functions || []);
 
     if (requiredFiles.has(sha1)) {
-      const fileRes = await fetch(`${NETLIFY_API}/deploys/${deployId}/files/index.html`, {
+      const fileRes = await fetch(`${netlifyApiBase}/deploys/${deployId}/files/index.html`, {
         method: "PUT",
         headers: { ...netlifyHeaders(netlifyToken), "Content-Type": "application/octet-stream" },
         body: Buffer.from(indexContent),
@@ -109,7 +109,7 @@ export async function POST(request) {
 
     if (requiredFunctions.has(sha256)) {
       const fnRes = await fetch(
-        `${NETLIFY_API}/deploys/${deployId}/functions/${NETLIFY_FUNCTION_NAME}?runtime=js`,
+        `${netlifyApiBase}/deploys/${deployId}/functions/${netlifyFunctionName}?runtime=js`,
         {
           method: "PUT",
           headers: { ...netlifyHeaders(netlifyToken), "Content-Type": "application/octet-stream" },
