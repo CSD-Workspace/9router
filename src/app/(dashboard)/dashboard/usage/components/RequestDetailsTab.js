@@ -361,7 +361,7 @@ export default function RequestDetailsTab() {
 
           {showClearConfirm && (
             <div className="flex items-center gap-2">
-              <span className="text-sm text-red-500">Delete all {stats.total.toLocaleString()} records?</span>
+              <span className="text-sm text-red-500">Delete all {stats.total.toLocaleString()} records and usage data?</span>
               <Button
                 variant="solid"
                 size="sm"

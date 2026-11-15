@@ -31,7 +31,11 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-  if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  if (tempDir) {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  }
   if (originalDataDir === undefined) delete process.env.DATA_DIR;
   else process.env.DATA_DIR = originalDataDir;
 });
@@ -46,8 +50,8 @@ describe("request details — tab crash-risk cases", () => {
 
     const res = await db.getRequestDetails({ provider: "openai" });
     expect(Array.isArray(res.details)).toBe(true);
-    const corrupt = res.details.find((d) => Object.keys(d).length === 0);
-    expect(corrupt).toEqual({});
+    const corrupt = res.details.find((d) => d.id === "corrupt-1");
+    expect(corrupt).toEqual({ id: "corrupt-1" });
   });
 
   it("pagination beyond last page → empty details, valid meta", async () => {

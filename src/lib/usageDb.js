@@ -3,7 +3,7 @@ export {
   statsEmitter, trackPendingRequest, getActiveRequests,
   registerActiveRequest, unregisterActiveRequest,
   saveRequestUsage, getUsageHistory, getUsageStats, getChartData,
-  appendRequestLog, getRecentLogs,
+  appendRequestLog, getRecentLogs, clearUsageData, deleteUsageDataBefore,
   saveRequestDetail, getRequestDetails, getRequestDetailById,
   getDistinctProviders, getDistinctModels, getDistinctStatuses,
   getRequestDetailsStats, clearRequestDetails, deleteRequestDetailsBefore,

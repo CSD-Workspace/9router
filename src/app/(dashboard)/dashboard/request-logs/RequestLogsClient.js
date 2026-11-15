@@ -347,7 +347,7 @@ export default function RequestLogsClient() {
         onClose={() => setShowClearConfirm(false)}
         onConfirm={handleClearAll}
         title="Clear all request logs?"
-        message={`This will permanently delete all ${stats?.totalItems ?? 0} request log records. This action cannot be undone.`}
+        message={`This will permanently delete all ${stats?.totalItems ?? 0} request log records and associated usage & analytics data. This action cannot be undone.`}
         confirmText="Clear all"
         variant="danger"
         loading={clearing}

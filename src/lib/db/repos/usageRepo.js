@@ -943,3 +943,85 @@ export async function getRecentLogs(limit = 200) {
     return [];
   }
 }
+
+export async function clearUsageData() {
+  const db = await getAdapter();
+  let deletedHistory = 0;
+  let deletedDaily = 0;
+
+  db.transaction(() => {
+    const histCnt = db.get(`SELECT COUNT(*) as c FROM usageHistory`);
+    deletedHistory = histCnt?.c ?? 0;
+    db.run(`DELETE FROM usageHistory`);
+
+    const dailyCnt = db.get(`SELECT COUNT(*) as c FROM usageDaily`);
+    deletedDaily = dailyCnt?.c ?? 0;
+    db.run(`DELETE FROM usageDaily`);
+
+    db.run(
+      `INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', '0') ON CONFLICT(key) DO UPDATE SET value = '0'`
+    );
+  });
+
+  recentRing.items = [];
+  scheduleStatsEvent("update", 0);
+  return { deletedHistory, deletedDaily };
+}
+
+export async function deleteUsageDataBefore(cutoffDate) {
+  const db = await getAdapter();
+  const cutoff = new Date(cutoffDate).toISOString();
+  const cutoffDateKey = getLocalDateKey(cutoff);
+  let deletedHistory = 0;
+
+  db.transaction(() => {
+    const histBefore = db.get(`SELECT COUNT(*) as c FROM usageHistory WHERE timestamp < ?`, [cutoff]);
+    deletedHistory = histBefore?.c ?? 0;
+    if (deletedHistory > 0) {
+      db.run(`DELETE FROM usageHistory WHERE timestamp < ?`, [cutoff]);
+    }
+
+    db.run(`DELETE FROM usageDaily WHERE dateKey < ?`, [cutoffDateKey]);
+
+    const sameDayRows = db.all(
+      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost, status, tokens FROM usageHistory WHERE timestamp >= ?`,
+      [`${cutoffDateKey}T00:00:00`]
+    ).filter((r) => getLocalDateKey(r.timestamp) === cutoffDateKey);
+
+    if (sameDayRows.length === 0) {
+      db.run(`DELETE FROM usageDaily WHERE dateKey = ?`, [cutoffDateKey]);
+    } else {
+      const day = {
+        requests: 0, promptTokens: 0, completionTokens: 0, cost: 0,
+        byProvider: {}, byModel: {}, byAccount: {}, byApiKey: {}, byEndpoint: {},
+      };
+      for (const r of sameDayRows) {
+        aggregateEntryToDay(day, {
+          timestamp: r.timestamp,
+          provider: r.provider,
+          model: r.model,
+          connectionId: r.connectionId,
+          apiKey: r.apiKey,
+          endpoint: r.endpoint,
+          cost: r.cost,
+          status: r.status,
+          tokens: parseJson(r.tokens, {}),
+        });
+      }
+      db.run(
+        `INSERT INTO usageDaily(dateKey, data) VALUES(?, ?) ON CONFLICT(dateKey) DO UPDATE SET data = excluded.data`,
+        [cutoffDateKey, stringifyJson(day)]
+      );
+    }
+
+    const totalRemaining = db.get(`SELECT COUNT(*) as c FROM usageHistory`)?.c ?? 0;
+    db.run(
+      `INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [String(totalRemaining)]
+    );
+  });
+
+  recentRing.items = recentRing.items.filter((item) => item.timestamp && new Date(item.timestamp) >= new Date(cutoff));
+  scheduleStatsEvent("update", 0);
+  return { deletedHistory };
+}

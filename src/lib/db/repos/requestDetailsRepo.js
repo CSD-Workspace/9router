@@ -259,23 +259,37 @@ export async function getRequestDetailsStats() {
   };
 }
 
-export async function deleteRequestDetailsBefore(cutoffDate) {
-  const db = await getAdapter();
+export async function deleteRequestDetailsBefore(cutoffDate, { clearUsage = true } = {}) {
+  // Clear any buffered entries older than cutoff
   const cutoff = new Date(cutoffDate).toISOString();
+  writeBuffer = writeBuffer.filter((item) => item.timestamp && new Date(item.timestamp) >= new Date(cutoff));
+
+  const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) as c FROM requestDetails WHERE timestamp < ?`, [cutoff]);
   const deletedCount = before?.c ?? 0;
   if (deletedCount > 0) {
     db.run(`DELETE FROM requestDetails WHERE timestamp < ?`, [cutoff]);
   }
+  if (clearUsage) {
+    const { deleteUsageDataBefore } = await import("./usageRepo.js");
+    await deleteUsageDataBefore(cutoffDate);
+  }
   return deletedCount;
 }
 
-export async function clearRequestDetails() {
+export async function clearRequestDetails({ clearUsage = true } = {}) {
+  // Clear any unflushed buffer
+  writeBuffer.length = 0;
+
   const db = await getAdapter();
   const before = db.get(`SELECT COUNT(*) as c FROM requestDetails`);
   const deletedCount = before?.c ?? 0;
   if (deletedCount > 0) {
     db.run(`DELETE FROM requestDetails`);
+  }
+  if (clearUsage) {
+    const { clearUsageData } = await import("./usageRepo.js");
+    await clearUsageData();
   }
   return deletedCount;
 }
