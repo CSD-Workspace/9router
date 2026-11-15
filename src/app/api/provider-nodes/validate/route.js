@@ -118,7 +118,10 @@ export async function POST(request) {
         headers: {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
-          "Authorization": `Bearer ${apiKey}`
+          "Authorization": `Bearer ${apiKey}`,
+          "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
+          "Anthropic-Dangerous-Direct-Browser-Access": "true",
+          "X-App": "cli",
         }
       });
 
@@ -137,7 +140,10 @@ export async function POST(request) {
             "Authorization": `Bearer ${apiKey}`,
             "Content-Type": "application/json",
             "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "claude-cli/2.1.280 (external, sdk-cli)",
+            "Anthropic-Dangerous-Direct-Browser-Access": "true",
+            "X-App": "cli",
           },
           body: JSON.stringify({
             model: modelId,
@@ -161,7 +167,10 @@ export async function POST(request) {
     // OpenAI Compatible Validation (Default)
     const modelsUrl = `${baseUrl.replace(/\/$/, "")}/models`;
     const res = await fetchWithTimeout(modelsUrl, {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "User-Agent": "opencode/1.18.25",
+      },
     });
 
     if (res.ok) return NextResponse.json({ valid: true });
@@ -177,7 +186,8 @@ export async function POST(request) {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "User-Agent": "opencode/1.18.25",
         },
         body: JSON.stringify({
           model: modelId,

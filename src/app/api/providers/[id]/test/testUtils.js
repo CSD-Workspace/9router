@@ -1,7 +1,8 @@
-import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { getProviderConnectionById, updateProviderConnection, getSettings } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
+import { getCompatibleDefaultHeaders } from "open-sse/providers/compatibleHeaders.js";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { probeBedrockCredentials } from "open-sse/executors/bedrock.js";
 import { resolveOllamaLocalHost, PROVIDERS } from "open-sse/config/providers.js";
@@ -526,8 +527,15 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     const modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
+      const settings = await getSettings().catch(() => ({}));
+      const userHeaders = settings?.providerOverrides?.[connection.provider]?.headers || {};
+      const defaultHeaders = getCompatibleDefaultHeaders(connection.provider);
       const res = await fetchWithConnectionProxy(`${modelsBase.replace(/\/$/, "")}/models`, {
-        headers: { "Authorization": `Bearer ${connection.apiKey}` },
+        headers: {
+          "Authorization": `Bearer ${connection.apiKey}`,
+          ...defaultHeaders,
+          ...userHeaders,
+        },
       }, effectiveProxy);
       return { valid: res.ok, error: res.ok ? null : "Invalid API key or base URL" };
     } catch (err) {
@@ -543,6 +551,9 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
       if (modelsBase.endsWith("/messages")) modelsBase = modelsBase.slice(0, -9);
       const messagesUrl = `${modelsBase}/v1/messages`;
       const model = connection.defaultModel || "claude-3-haiku-20240307";
+      const settings = await getSettings().catch(() => ({}));
+      const userHeaders = settings?.providerOverrides?.[connection.provider]?.headers || {};
+      const defaultHeaders = getCompatibleDefaultHeaders(connection.provider);
       const res = await fetchWithConnectionProxy(messagesUrl, {
         method: "POST",
         headers: {
@@ -550,6 +561,8 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
           "anthropic-version": "2023-06-01",
           "content-type": "application/json",
           "Authorization": `Bearer ${connection.apiKey}`,
+          ...defaultHeaders,
+          ...userHeaders,
         },
         body: JSON.stringify({
           model,
