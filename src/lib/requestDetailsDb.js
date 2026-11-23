@@ -1,4 +1,6 @@
 // Shim → re-export from new SQLite-based DB layer (src/lib/db/)
 export {
-  saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
+  saveRequestDetail, getRequestDetails, getRequestDetailById,
+  getDistinctProviders, getDistinctModels, getDistinctStatuses,
+  getRequestDetailsStats, clearRequestDetails, deleteRequestDetailsBefore,
 } from "@/lib/db/index.js";

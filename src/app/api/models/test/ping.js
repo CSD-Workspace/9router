@@ -1,9 +1,11 @@
-import { getApiKeys } from "@/lib/localDb";
+import { getApiKeys, getSettings, getProviderNodes } from "@/lib/localDb";
 import { resolveProviderId } from "@/shared/constants/providers.js";
 import { getModelMeta } from "open-sse/config/providerModels.js";
 import { unwrapClineEnvelope } from "open-sse/shared/clineEnvelope.js";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { resolveProviderAlias } from "open-sse/services/model.js";
+import { lookupCustomHeaders, applyCaseInsensitiveHeaders } from "@/lib/providers/customHeaders.js";
 
 const CLI_TOKEN_SALT = "9r-cli-auth";
 
@@ -56,8 +58,28 @@ async function getInternalHeaders() {
   return headers;
 }
 
-export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`) {
-  const headers = await getInternalHeaders();
+export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`, customHeaders = null) {
+  let effectiveUserHeaders = customHeaders || {};
+  if (!customHeaders || Object.keys(customHeaders).length === 0) {
+    try {
+      const settings = await getSettings();
+      const overrides = settings?.providerOverrides || {};
+      const nodes = await getProviderNodes().catch(() => []);
+      const providerPart = String(model).split("/")[0];
+      effectiveUserHeaders = lookupCustomHeaders(overrides, {
+        provider: providerPart,
+        model,
+        providerNodes: nodes,
+      });
+    } catch {}
+  }
+
+  const baseHeaders = await getInternalHeaders();
+  const headers = { ...baseHeaders };
+  if (effectiveUserHeaders && Object.keys(effectiveUserHeaders).length > 0) {
+    headers["x-9r-custom-headers"] = JSON.stringify(effectiveUserHeaders);
+    applyCaseInsensitiveHeaders(headers, effectiveUserHeaders);
+  }
   const start = Date.now();
 
   if (kind === "embedding") {

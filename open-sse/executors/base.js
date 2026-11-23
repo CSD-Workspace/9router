@@ -4,6 +4,7 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { getCompatibleDefaultHeaders, applyCaseInsensitiveHeaders } from "../providers/compatibleHeaders.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -129,8 +130,14 @@ export class BaseExecutor {
       const url = this.buildUrl(model, stream, urlIndex, credentials);
       const transformedBody = this.transformRequest(model, body, stream, credentials);
       const headers = this.buildHeaders(credentials, stream, url, model, transformedBody);
+      const defaultCompatHeaders = getCompatibleDefaultHeaders(this.provider);
+      if (Object.keys(defaultCompatHeaders).length > 0) {
+        applyCaseInsensitiveHeaders(headers, defaultCompatHeaders);
+      }
       // User per-provider override wins over registry headers (blocked names filtered at the API)
-      if (providerOverrides?.headers) Object.assign(headers, providerOverrides.headers);
+      if (providerOverrides?.headers) {
+        applyCaseInsensitiveHeaders(headers, providerOverrides.headers);
+      }
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 

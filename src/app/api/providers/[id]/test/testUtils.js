@@ -1,7 +1,10 @@
-import { getProviderConnectionById, updateProviderConnection } from "@/lib/localDb";
+import { getProviderConnectionById, updateProviderConnection, getSettings, getProviderNodes } from "@/lib/localDb";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { testProxyUrl } from "@/lib/network/proxyTest";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider, AI_PROVIDERS } from "@/shared/constants/providers";
+import { resolveProviderAlias } from "open-sse/services/model.js";
+import { getCompatibleDefaultHeaders } from "open-sse/providers/compatibleHeaders.js";
+import { lookupCustomHeaders, applyCaseInsensitiveHeaders } from "@/lib/providers/customHeaders.js";
 import { getDefaultModel } from "open-sse/config/providerModels.js";
 import { ANTIGRAVITY_IDE_USER_AGENT } from "open-sse/providers/shared.js";
 import { probeBedrockCredentials } from "open-sse/executors/bedrock.js";
@@ -239,7 +242,7 @@ function parseProviderErrorMessage(bodyText, fallback) {
   return bodyText.trim() || fallback;
 }
 
-async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy = null) {
+async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy = null, userHeaders = null) {
   const userAgent = connection.provider === "antigravity"
     ? (ANTIGRAVITY_CONFIG.loadCodeAssistUserAgent || ANTIGRAVITY_IDE_USER_AGENT)
     : "google-api-nodejs-client/9.15.1 gemini-cli/0.34.0";
@@ -252,7 +255,7 @@ async function probeCloudCodeAssistAccess(connection, accessToken, effectiveProx
       "User-Agent": userAgent,
     },
     body: CLOUD_CODE_ASSIST_TEST_BODY,
-  }, effectiveProxy);
+  }, effectiveProxy, userHeaders);
 
   if (res.ok) return { valid: true, error: null };
 
@@ -368,7 +371,8 @@ function isTokenExpired(connection) {
   return shouldRefreshCredentials(connection.provider, connection);
 }
 
-async function testOAuthConnection(connection, effectiveProxy = null) {
+async function testOAuthConnection(connection, effectiveProxy = null, userHeaders = null) {
+  const effectiveProxyWithHeaders = { ...(effectiveProxy || {}), _userHeaders: userHeaders };
   const config = OAUTH_TEST_CONFIG[connection.provider];
   if (!config) return { valid: false, error: "Provider test not supported", refreshed: false };
   if (!connection.accessToken) return { valid: false, error: "No access token", refreshed: false };
@@ -401,13 +405,13 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   }
 
   if (connection.provider === "gemini-cli" || connection.provider === "antigravity") {
-    const initial = await probeCloudCodeAssistAccess(connection, accessToken, effectiveProxy);
+    const initial = await probeCloudCodeAssistAccess(connection, accessToken, effectiveProxyWithHeaders, userHeaders);
     if (initial.valid) return { valid: true, error: null, refreshed, newTokens };
 
     if (initial.status === 401 && config.refreshable && !refreshed && connection.refreshToken) {
       const tokens = await refreshOAuthToken(connection);
       if (tokens?.accessToken) {
-        const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxy);
+        const retry = await probeCloudCodeAssistAccess(connection, tokens.accessToken, effectiveProxyWithHeaders, userHeaders);
         if (retry.valid) return { valid: true, error: null, refreshed: true, newTokens: tokens };
         return { valid: false, error: retry.error, refreshed: true, newTokens: tokens };
       }
@@ -449,7 +453,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
       : { [config.authHeader]: `${config.authPrefix}${accessToken}`, ...config.extraHeaders };
     const fetchOpts = { method: config.method, headers };
     if (config.body) fetchOpts.body = config.body;
-    const res = await fetchWithConnectionProxy(testUrl, fetchOpts, effectiveProxy);
+    const res = await fetchWithConnectionProxy(testUrl, fetchOpts, effectiveProxyWithHeaders, userHeaders);
     const bodyText = !res.ok ? await res.text().catch(() => "") : "";
 
     const classified = classifyOAuthProbeResult(res, config, bodyText);
@@ -474,7 +478,7 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
           : { [config.authHeader]: `${config.authPrefix}${retryToken}`, ...config.extraHeaders };
         const retryOpts = { method: config.method, headers: retryHeaders };
         if (config.body) retryOpts.body = config.body;
-        const retryRes = await fetchWithConnectionProxy(retryUrl, retryOpts, effectiveProxy);
+        const retryRes = await fetchWithConnectionProxy(retryUrl, retryOpts, effectiveProxyWithHeaders, userHeaders);
         const retryBody = !retryRes.ok ? await retryRes.text().catch(() => "") : "";
         const retryClassified = classifyOAuthProbeResult(retryRes, config, retryBody);
         if (retryClassified.valid) {
@@ -496,11 +500,16 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
   }
 }
 
-async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null) {
+async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null, extraHeaders = null) {
   // Add a 15-second timeout to prevent connection testing from hanging indefinitely
   // and exhausting the browser/Node.js connection pools.
   if (!options.signal) {
     options.signal = AbortSignal.timeout(15000);
+  }
+
+  const mergedUserHeaders = extraHeaders || effectiveProxy?._userHeaders;
+  if (mergedUserHeaders && typeof mergedUserHeaders === "object" && Object.keys(mergedUserHeaders).length > 0) {
+    options.headers = applyCaseInsensitiveHeaders({ ...(options.headers || {}) }, mergedUserHeaders);
   }
 
   // Vercel relay: forward via relay URL
@@ -523,14 +532,66 @@ async function fetchWithConnectionProxy(url, options = {}, effectiveProxy = null
   });
 }
 
-async function testApiKeyConnection(connection, effectiveProxy = null) {
+export async function getProviderUserHeaders(connection, options = {}) {
+  let stored = {};
+  try {
+    const settings = await getSettings().catch(() => ({}));
+    const overrides = settings?.providerOverrides || {};
+    const nodes = await getProviderNodes().catch(() => []);
+    stored = lookupCustomHeaders(overrides, {
+      connectionId: connection.id,
+      provider: connection.provider,
+      providerNodes: nodes,
+    });
+  } catch {}
+  const explicit = options.customHeaders || {};
+  return applyCaseInsensitiveHeaders({ ...stored }, explicit);
+}
+
+async function testApiKeyConnection(connection, rawEffectiveProxy = null, userHeaders = null) {
+  const effectiveProxy = { ...(rawEffectiveProxy || {}), _userHeaders: userHeaders };
+  const fetchWithProxy = (url, opts = {}) => fetchWithConnectionProxy(url, opts, effectiveProxy);
+
   if (isOpenAICompatibleProvider(connection.provider)) {
     const modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
-      const res = await fetchWithConnectionProxy(`${modelsBase.replace(/\/$/, "")}/models`, {
-        headers: { "Authorization": `Bearer ${connection.apiKey}` },
-      }, effectiveProxy);
+      const cleanBase = modelsBase.replace(/\/+$/, "");
+      const defaultHeaders = getCompatibleDefaultHeaders(connection.provider);
+      const isResponsesNode = connection.providerSpecificData?.apiType === "responses" || String(connection.provider).includes("-responses-");
+      const probeHeaders = applyCaseInsensitiveHeaders(
+        {
+          "Authorization": `Bearer ${connection.apiKey}`,
+          ...defaultHeaders,
+        },
+        userHeaders
+      );
+      const res = await fetchWithProxy(`${cleanBase}/models`, {
+        headers: probeHeaders,
+      });
+
+      if (!res.ok && (res.status === 404 || res.status === 405 || (isResponsesNode && (res.status === 400 || res.status === 403)))) {
+        // Fallback to chat completions probe or responses probe if /models is not implemented or chat is disabled
+        const fallbackPath = isResponsesNode ? "/responses" : "/chat/completions";
+        const fallbackBody = isResponsesNode
+          ? { model: connection.defaultModel || "gpt-5.4", input: [{ role: "user", content: "test" }] }
+          : { model: connection.defaultModel || "gpt-3.5-turbo", messages: [{ role: "user", content: "test" }], max_tokens: 1 };
+        const chatRes = await fetchWithProxy(`${cleanBase}${fallbackPath}`, {
+          method: "POST",
+          headers: applyCaseInsensitiveHeaders(
+            {
+              "Authorization": `Bearer ${connection.apiKey}`,
+              "Content-Type": "application/json",
+              ...defaultHeaders,
+            },
+            userHeaders
+          ),
+          body: JSON.stringify(fallbackBody),
+        });
+        const valid = chatRes.status !== 401 && chatRes.status !== 403;
+        return { valid, error: valid ? null : "Invalid API key or base URL" };
+      }
+
       return { valid: res.ok, error: res.ok ? null : "Invalid API key or base URL" };
     } catch (err) {
       return { valid: false, error: err.message };
@@ -541,24 +602,31 @@ async function testApiKeyConnection(connection, effectiveProxy = null) {
     let modelsBase = connection.providerSpecificData?.baseUrl;
     if (!modelsBase) return { valid: false, error: "Missing base URL" };
     try {
-      modelsBase = modelsBase.replace(/\/$/, "");
-      if (modelsBase.endsWith("/messages")) modelsBase = modelsBase.slice(0, -9);
-      const messagesUrl = `${modelsBase}/v1/messages`;
+      modelsBase = modelsBase.replace(/\/+$/, "");
+      if (modelsBase.endsWith("/messages")) modelsBase = modelsBase.slice(0, -9).replace(/\/+$/, "");
+      const messagesUrl = modelsBase.endsWith("/v1")
+        ? `${modelsBase}/messages`
+        : `${modelsBase}/v1/messages`;
       const model = connection.defaultModel || "claude-3-haiku-20240307";
-      const res = await fetchWithConnectionProxy(messagesUrl, {
+      const defaultHeaders = getCompatibleDefaultHeaders(connection.provider);
+      const res = await fetchWithProxy(messagesUrl, {
         method: "POST",
-        headers: {
-          "x-api-key": connection.apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-          "Authorization": `Bearer ${connection.apiKey}`,
-        },
+        headers: applyCaseInsensitiveHeaders(
+          {
+            "x-api-key": connection.apiKey,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "Authorization": `Bearer ${connection.apiKey}`,
+            ...defaultHeaders,
+          },
+          userHeaders
+        ),
         body: JSON.stringify({
           model,
           max_tokens: 1,
           messages: [{ role: "user", content: "test" }],
         }),
-      }, effectiveProxy);
+      });
       // 400/529 still confirms key accepted; only 401/403 = bad key
       const valid = res.status !== 401 && res.status !== 403;
       return { valid, error: valid ? null : "Invalid API key or base URL" };
@@ -968,6 +1036,23 @@ case "llm7": {
         }, effectiveProxy);
         return { valid: res.ok, error: res.ok ? null : "Invalid API key", refreshed: false };
       }
+      case "agentrouter":
+      case "ar": {
+        const baseUrl = connection.providerSpecificData?.baseUrl || "https://agentrouter.org/v1";
+        const modelsUrl = `${baseUrl.replace(/\/+$/, "")}/models`;
+        const res = await fetchWithConnectionProxy(modelsUrl, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${connection.apiKey}`,
+            "User-Agent": "opencode/1.18.25",
+          },
+        }, effectiveProxy);
+        const valid = res.ok;
+        return {
+          valid,
+          error: valid ? null : (res.status === 401 || res.status === 403 ? "Invalid API key" : `AgentRouter error (${res.status})`),
+        };
+      }
       default:
         return { valid: false, error: "Provider test not supported" };
     }
@@ -979,11 +1064,12 @@ case "llm7": {
 /**
  * Test a single connection by ID, update DB, and return result.
  */
-export async function testSingleConnection(id) {
+export async function testSingleConnection(id, options = {}) {
   const connection = await getProviderConnectionById(id);
   if (!connection) return { valid: false, error: "Connection not found", latencyMs: 0, testedAt: new Date().toISOString() };
 
   const effectiveProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+  const userHeaders = await getProviderUserHeaders(connection, options);
 
   if (effectiveProxy.connectionProxyEnabled && effectiveProxy.connectionProxyUrl && !effectiveProxy.vercelRelayUrl) {
     const proxyResult = await testProxyUrl({ proxyUrl: effectiveProxy.connectionProxyUrl });
@@ -1002,9 +1088,9 @@ export async function testSingleConnection(id) {
   let result;
 
   if (connection.authType === "apikey" || connection.authType === "cookie") {
-    result = await testApiKeyConnection(connection, effectiveProxy);
+    result = await testApiKeyConnection(connection, effectiveProxy, userHeaders);
   } else {
-    result = await testOAuthConnection(connection, effectiveProxy);
+    result = await testOAuthConnection(connection, effectiveProxy, userHeaders);
   }
 
   const latencyMs = Date.now() - start;

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSettings, updateSettings } from "@/lib/localDb";
 import { PROVIDERS } from "open-sse/config/providers.js";
 import { resolveProviderAlias } from "open-sse/services/model.js";
+import { getCompatibleDefaultHeaders } from "open-sse/providers/compatibleHeaders.js";
 
 export const dynamic = "force-dynamic";
 
@@ -72,11 +73,15 @@ export async function GET(request, { params }) {
     // URL may use an alias (gcli, cc…) — key everything by canonical registry id
     const canonical = resolveProviderAlias(id);
     const override = (await readOverrides())[canonical] || {};
-    // Built-in headers come straight from the registry transport — single source of
+    let builtinHeaders = PROVIDERS[canonical]?.headers || {};
+    if (Object.keys(builtinHeaders).length === 0) {
+      builtinHeaders = getCompatibleDefaultHeaders(canonical);
+    }
+    // Built-in headers come straight from the registry transport (or compatible defaults) — single source of
     // truth, so the UI pre-fills exactly what this provider sends upstream.
     return NextResponse.json({
       headers: override.headers || {},
-      builtinHeaders: PROVIDERS[canonical]?.headers || {},
+      builtinHeaders,
     });
   } catch (error) {
     console.log("Error getting provider overrides:", error);

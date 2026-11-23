@@ -42,6 +42,24 @@ function normalizeProxyPoolUpdate(body = {}) {
     updates.type = validTypes.includes(body?.type) ? body.type : "http";
   }
 
+  if (Object.prototype.hasOwnProperty.call(body, "egressIp")) {
+    updates.egressIp = typeof body?.egressIp === "string" && body.egressIp.trim() ? body.egressIp.trim() : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "egressIpCheckedAt")) {
+    updates.egressIpCheckedAt = body?.egressIpCheckedAt || null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "egressIpError")) {
+    updates.egressIpError = typeof body?.egressIpError === "string" && body.egressIpError.trim()
+      ? body.egressIpError.trim()
+      : null;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, "egressIpIsLocal")) {
+    updates.egressIpIsLocal = typeof body?.egressIpIsLocal === "boolean" ? body.egressIpIsLocal : null;
+  }
+
   return { updates };
 }
 

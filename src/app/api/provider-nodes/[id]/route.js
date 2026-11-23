@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteProviderConnectionsByProvider, deleteProviderNode, getProviderConnections, getProviderNodeById, updateProviderConnection, updateProviderNode } from "@/models";
+import { getSettings, updateSettings } from "@/lib/localDb";
 
 // PUT /api/provider-nodes/[id] - Update provider node
 export async function PUT(request, { params }) {
@@ -92,6 +93,13 @@ export async function DELETE(request, { params }) {
 
     await deleteProviderConnectionsByProvider(id);
     await deleteProviderNode(id);
+
+    const settings = await getSettings().catch(() => ({}));
+    if (settings?.providerOverrides?.[id]) {
+      const next = { ...settings.providerOverrides };
+      delete next[id];
+      await updateSettings({ providerOverrides: next }).catch(() => {});
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

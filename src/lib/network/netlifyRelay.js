@@ -14,10 +14,11 @@
 // default endpoint: <site>/.netlify/functions/relay.
 
 import { createHash } from "node:crypto";
+import { relayIpHeaders } from "./relayScripts.js";
 
-export const NETLIFY_API = "https://api.netlify.com/api/v1";
-export const NETLIFY_FUNCTION_NAME = "relay";
-export const NETLIFY_FUNCTION_PATH = "/.netlify/functions/relay";
+export const netlifyApiBase = "https://api.netlify.com/api/v1";
+export const netlifyFunctionName = "relay";
+export const netlifyFunctionPath = "/.netlify/functions/relay";
 
 // Digest-deployed functions (no build step) run on the Lambda-compatible
 // runtime, so the bundle must use exports.handler(event) with a string body,
@@ -26,7 +27,14 @@ export const NETLIFY_FUNCTION_PATH = "/.netlify/functions/relay";
 // cannot-unmarshal-object-into-Go-struct-field (502).
 // Response shape mirrors the Vercel/Cloudflare/Deno relays: relay headers
 // stripped, status/body passed through.
-export const NETLIFY_RELAY_FUNCTION_CODE = `exports.handler = async (event) => {
+//
+// Netlify also injects client-address headers (x-nf-client-connection-ip,
+// x-forwarded-for, ...) naming the machine that called the relay. They must not
+// reach the provider, or the pool leaks the real IP the same way the other
+// relays did — hence the shared client-IP header strip.
+export const netlifyRelayFunctionCode = `const relayIpHeaders = new Set(${JSON.stringify(relayIpHeaders)});
+
+exports.handler = async (event) => {
   const headers = {};
   for (const [k, v] of Object.entries(event.headers || {})) {
     headers[k.toLowerCase()] = v;
@@ -47,7 +55,7 @@ export const NETLIFY_RELAY_FUNCTION_CODE = `exports.handler = async (event) => {
   const forwardHeaders = { ...event.headers };
   for (const k of Object.keys(forwardHeaders)) {
     const lower = k.toLowerCase();
-    if (lower === "x-relay-target" || lower === "x-relay-path" || lower === "host") {
+    if (lower === "x-relay-target" || lower === "x-relay-path" || lower === "host" || relayIpHeaders.has(lower)) {
       delete forwardHeaders[k];
     }
   }
@@ -91,7 +99,7 @@ export const NETLIFY_RELAY_FUNCTION_CODE = `exports.handler = async (event) => {
   }
 };
 `;
-export const NETLIFY_INDEX_HTML = `<!doctype html>
+export const netlifyIndexHtml = `<!doctype html>
 <html><head><meta charset="utf-8"><title>9Router Relay</title></head>
 <body><p>9Router relay function lives at <code>/.netlify/functions/relay</code>.</p></body></html>
 `;
@@ -174,18 +182,18 @@ export function buildStoredZip(files) {
 
 // Zipped single-file bundle Netlify expects for `runtime=js` function uploads.
 export function buildRelayFunctionZip() {
-  const content = new TextEncoder().encode(NETLIFY_RELAY_FUNCTION_CODE);
-  const zip = buildStoredZip([{ name: `${NETLIFY_FUNCTION_NAME}.js`, data: content }]);
+  const content = new TextEncoder().encode(netlifyRelayFunctionCode);
+  const zip = buildStoredZip([{ name: `${netlifyFunctionName}.js`, data: content }]);
   return { zip, sha256: sha256Hex(zip) };
 }
 
 export function buildIndexFile() {
-  const content = new TextEncoder().encode(NETLIFY_INDEX_HTML);
+  const content = new TextEncoder().encode(netlifyIndexHtml);
   return { content, sha1: sha1Hex(content) };
 }
 
 export function buildRelayUrl(siteUrl) {
-  return `${String(siteUrl || "").replace(/\/$/, "")}${NETLIFY_FUNCTION_PATH}`;
+  return `${String(siteUrl || "").replace(/\/$/, "")}${netlifyFunctionPath}`;
 }
 
 export function netlifyHeaders(token) {
@@ -198,7 +206,7 @@ export function netlifyHeaders(token) {
 export async function pollDeployReady(deployId, token, fetchImpl = fetch, maxMs = 120000, intervalMs = 3000) {
   const start = Date.now();
   for (;;) {
-    const res = await fetchImpl(`${NETLIFY_API}/deploys/${deployId}`, {
+    const res = await fetchImpl(`${netlifyApiBase}/deploys/${deployId}`, {
       headers: netlifyHeaders(token),
     });
     const data = await res.json().catch(() => ({}));

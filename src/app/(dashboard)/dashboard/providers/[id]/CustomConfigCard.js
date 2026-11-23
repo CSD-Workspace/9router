@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import PropTypes from "prop-types";
 import { Card, Badge } from "@/shared/components";
 import { useNotificationStore } from "@/store/notificationStore";
+import { HEADER_PRESETS } from "@/shared/constants/headerPresets";
 
 // Mirrors the server-side gate in /api/providers/[id]/overrides — client check is UX only
 const BLOCKED_HEADERS = ["host", "content-length", "content-type", "connection", "transfer-encoding", "authorization", "cookie"];
@@ -83,8 +84,37 @@ export default function CustomConfigCard({ providerId }) {
     setRows(Object.entries(builtin).map(([name, value]) => ({ name, value })));
   };
 
-  // Only render when there is something to customize: registry headers or existing overrides
-  if (Object.keys(builtin).length === 0 && !hasOverride) return null;
+  const applyPreset = (presetId) => {
+    if (!presetId) return;
+    const preset = HEADER_PRESETS.find((p) => p.id === presetId);
+    if (!preset) return;
+
+    setRows((prev) => {
+      const next = [...prev];
+      for (const [pName, pValue] of Object.entries(preset.headers)) {
+        const existingIdx = next.findIndex((r) => r.name.trim().toLowerCase() === pName.toLowerCase());
+        if (existingIdx !== -1) {
+          next[existingIdx] = { ...next[existingIdx], value: pValue };
+        } else {
+          const emptyIdx = next.findIndex((r) => !r.name.trim() && !r.value.trim());
+          if (emptyIdx !== -1) {
+            next[emptyIdx] = { name: pName, value: pValue };
+          } else {
+            next.push({ name: pName, value: pValue });
+          }
+        }
+      }
+      return next.length ? next : [{ name: "", value: "" }];
+    });
+    notify.success(`Applied preset: ${preset.name}`);
+  };
+
+  const isCompatible =
+    typeof providerId === "string" &&
+    (providerId.startsWith("openai-compatible-") || providerId.startsWith("anthropic-compatible-"));
+
+  // Only render when there is something to customize: registry headers, existing overrides, or compatible providers
+  if (Object.keys(builtin).length === 0 && !hasOverride && !isCompatible) return null;
 
   return (
     <Card padding="xs">
@@ -107,6 +137,28 @@ export default function CustomConfigCard({ providerId }) {
 
       {expanded && (
         <div className="mt-3 border-t border-border pt-3">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[18px] text-text-muted">bookmark</span>
+              <span className="text-xs text-text-muted">Preset:</span>
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  applyPreset(e.target.value);
+                  e.target.value = "";
+                }}
+                className="rounded-md border border-border bg-background px-2 py-1 text-xs text-text focus:border-primary focus:outline-none"
+              >
+                <option value="">-- Select a preset --</option>
+                {HEADER_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="flex flex-col gap-2">
             {rows.map((row, i) => {
               const overridden = row.name.trim() in builtin && row.value !== builtin[row.name.trim()];

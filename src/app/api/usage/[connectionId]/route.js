@@ -8,6 +8,7 @@ import { getExecutor } from "open-sse/executors/index.js";
 import { resolveConnectionProxyConfig } from "@/lib/network/connectionProxy";
 import { USAGE_APIKEY_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
+import { isNewApiAggregatorBalanceConnection } from "open-sse/services/newApiAggregatorQuotaFetcher.js";
 
 // Detect auth-expired messages returned by usage providers instead of throwing
 const AUTH_EXPIRED_PATTERNS = ["expired", "authentication", "unauthorized", "401", "re-authorize"];
@@ -150,8 +151,12 @@ export async function GET(request, { params }) {
     const isOAuth = connection.authType === "oauth";
     const isApikeyAuth =
       connection.authType === "apikey" || connection.authType === "api_key";
+    const isNewApiAggregator =
+      connection.provider === "agentrouter" ||
+      connection.provider === "ar" ||
+      isNewApiAggregatorBalanceConnection(connection);
     const isApikeyEligible =
-      isApikeyAuth && USAGE_APIKEY_PROVIDERS.includes(connection.provider);
+      isApikeyAuth && (USAGE_APIKEY_PROVIDERS.includes(connection.provider) || isNewApiAggregator);
     // Lease connections borrow the desktop app's token inside the usage handler.
     const isLease = isLeaseConnection(connection);
 

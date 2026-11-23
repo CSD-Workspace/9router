@@ -5,8 +5,9 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getProviderNodes } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
+import { resolveProviderAlias } from "open-sse/services/model.js";
 import { getKeyAccessContext, enforceKeyAccessResolved } from "../services/keyAccess.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -14,6 +15,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
+import { lookupCustomHeaders, applyCaseInsensitiveHeaders } from "@/lib/providers/customHeaders.js";
 
 function exactEmbeddingUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.estimated === true) return null;
@@ -99,8 +101,12 @@ export async function handleEmbeddings(request) {
   let lastError = null;
   let lastStatus = null;
 
+  const isInternalTest = !!request?.headers?.get?.("x-9r-cli-token");
+
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model);
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      ignoreModelLock: isInternalTest,
+    });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -122,11 +128,36 @@ export async function handleEmbeddings(request) {
 
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
+    const providerNodes = await getProviderNodes().catch(() => []);
+
     const result = await handleEmbeddingsCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
+      providerOverrides: (() => {
+        const overridesMap = settings.providerOverrides || {};
+        const baseHeaders = lookupCustomHeaders(overridesMap, {
+          provider,
+          model: modelStr,
+          connectionId: credentials?.connectionId,
+          providerNodes,
+        });
+
+        let effectiveOverrideHeaders = { ...baseHeaders };
+        const customHeaderStr = request?.headers?.get?.("x-9r-custom-headers");
+        if (customHeaderStr) {
+          try {
+            const parsed = JSON.parse(customHeaderStr);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              applyCaseInsensitiveHeaders(effectiveOverrideHeaders, parsed);
+            }
+          } catch {}
+        }
+        return {
+          headers: effectiveOverrideHeaders,
+        };
+      })(),
       onCredentialsRefreshed: async (newCreds) => {
         await updateProviderCredentials(credentials.connectionId, {
           ...newCreds,

@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
-import { getProviderConnections } from "@/lib/localDb";
+import { getProviderConnections, getProviderNodes } from "@/lib/localDb";
 import { backfillCodexEmails } from "@/lib/oauth/providers";
-import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS } from "@/shared/constants/providers";
+import { USAGE_APIKEY_PROVIDERS, USAGE_SUPPORTED_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
 import { isLeaseConnection } from "open-sse/services/minimaxCodeLease.js";
+import { isNewApiAggregatorBalanceConnection } from "open-sse/services/newApiAggregatorQuotaFetcher.js";
 
 const SAFE_FIELDS = [
-  "id", "provider", "authType", "name", "email", "displayName",
+  "id", "provider", "providerName", "authType", "name", "email", "displayName",
   "priority", "globalPriority", "isActive", "defaultModel",
   "testStatus", "lastError", "lastErrorAt", "errorCode",
   "expiresAt", "lastUsedAt", "consecutiveUseCount",
@@ -19,6 +20,7 @@ const SAFE_PSD_FIELDS = [
   "githubLogin", "githubName", "githubEmail", "githubUserId",
   "username", "firstName", "lastName", "authMethod", "authKind",
   "profileArn",
+  "newApiAggregatorBalance", "consoleApiKey", "newApiUserId", "quotaPerUnit", "prefix", "nodeName",
 ];
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -45,6 +47,9 @@ function sanitize(c) {
 }
 
 function isUsageEligible(connection) {
+  if (isNewApiAggregatorBalanceConnection(connection)) {
+    return true;
+  }
   return USAGE_SUPPORTED_PROVIDERS.includes(connection.provider) && (
     connection.authType === "oauth" || isLeaseConnection(connection) || USAGE_APIKEY_PROVIDERS.includes(connection.provider)
   );
@@ -62,8 +67,12 @@ function sortConnections(connections, sort) {
     return list.sort((a, b) => {
       const orderA = USAGE_SUPPORTED_PROVIDERS.indexOf(a.provider);
       const orderB = USAGE_SUPPORTED_PROVIDERS.indexOf(b.provider);
-      if (orderA !== orderB) return orderA - orderB;
-      return a.provider.localeCompare(b.provider);
+      if (orderA !== -1 && orderB !== -1) return orderA - orderB;
+      if (orderA !== -1) return -1;
+      if (orderB !== -1) return 1;
+      const labelA = a.providerName || a.provider || "";
+      const labelB = b.providerName || b.provider || "";
+      return labelA.localeCompare(labelB);
     });
   }
 
@@ -71,7 +80,9 @@ function sortConnections(connections, sort) {
     const priorityA = a.priority ?? Number.MAX_SAFE_INTEGER;
     const priorityB = b.priority ?? Number.MAX_SAFE_INTEGER;
     if (priorityA !== priorityB) return priorityA - priorityB;
-    return (a.provider || "").localeCompare(b.provider || "");
+    const labelA = a.providerName || a.provider || "";
+    const labelB = b.providerName || b.provider || "";
+    return labelA.localeCompare(labelB);
   });
 }
 
@@ -86,7 +97,24 @@ export async function GET(request) {
     const page = parsePositiveInt(searchParams.get("page"), 1);
     const pageSize = Math.min(parsePositiveInt(searchParams.get("pageSize"), DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
 
-    const allConnections = await getProviderConnections();
+    const [allConnections, allNodes] = await Promise.all([
+      getProviderConnections(),
+      getProviderNodes().catch(() => []),
+    ]);
+
+    const nodeNameMap = {};
+    for (const node of (allNodes || [])) {
+      if (node?.id && node?.name) nodeNameMap[node.id] = node.name;
+    }
+
+    for (const conn of allConnections) {
+      conn.providerName =
+        nodeNameMap[conn.provider] ||
+        conn.providerSpecificData?.nodeName ||
+        AI_PROVIDERS[conn.provider]?.name ||
+        conn.provider;
+    }
+
     const eligibleConnections = allConnections.filter(isUsageEligible);
     const providerOptions = Array.from(new Set(eligibleConnections.map((conn) => conn.provider))).sort();
 
@@ -110,6 +138,7 @@ export async function GET(request) {
     return NextResponse.json({
       connections: pageConnections,
       providerOptions,
+      providerNames: nodeNameMap,
       pagination: {
         page: currentPage,
         pageSize,

@@ -230,10 +230,12 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       fetch("/api/provider-nodes").then((r) => r.ok ? r.json() : null),
     ])
       .then(([d, nodesData]) => {
-        // Build node name lookup for custom providers
+        // Build node name and prefix lookup for custom providers
         const nodeNameMap = {};
+        const nodePrefixMap = {};
         for (const node of (nodesData?.nodes || [])) {
           nodeNameMap[node.id] = node.name;
+          nodePrefixMap[node.id] = node.prefix;
         }
         const seen = new Set();
         const unique = (d?.connections || []).filter((c) => {
@@ -246,6 +248,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         }).map((c) => ({
           ...c,
           nodeName: nodeNameMap[c.provider] || null,
+          prefix: nodePrefixMap[c.provider] || null,
         }));
         const noAuthProviders = Object.values(FREE_PROVIDERS)
           .filter((p) => p.noAuth && !p.hidden && !seen.has(p.id) && isLLMProvider(p.id))
@@ -293,6 +296,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           return {
             ...prev,
             activeRequests: data.activeRequests,
+            activeRequestCount: typeof data.activeRequestCount === "number" ? data.activeRequestCount : (data.activeRequests?.length ?? 0),
             recentRequests: data.recentRequests,
             errorProvider: data.errorProvider,
             pending: data.pending,
@@ -477,6 +481,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           <ProviderTopology
             providers={providers}
             activeRequests={stats.activeRequests || []}
+            activeRequestCount={stats.activeRequestCount ?? (stats.activeRequests || []).length}
             lastProvider={stats.recentRequests?.[0]?.provider || ""}
             errorProvider={stats.errorProvider || ""}
           />

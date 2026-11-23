@@ -34,20 +34,20 @@ function postRoute(body) {
 
 describe("netlifyRelay helpers", () => {
   it("relay function speaks the shared x-relay-target/x-relay-path spec", () => {
-    expect(net.NETLIFY_RELAY_FUNCTION_CODE).toContain("x-relay-target");
-    expect(net.NETLIFY_RELAY_FUNCTION_CODE).toContain("x-relay-path");
+    expect(net.netlifyRelayFunctionCode).toContain("x-relay-target");
+    expect(net.netlifyRelayFunctionCode).toContain("x-relay-path");
   });
 
   it("relay bundle is Lambda-compatible CJS with string body (digest deploys run no build step)", async () => {
     // Live-verified failure modes: `export default` -> Runtime.UserCodeSyntaxError
     // (502); stream object as body -> cannot-unmarshal-object-into-Go-struct
     // (502). The bundle must use exports.handler and return a string body.
-    expect(net.NETLIFY_RELAY_FUNCTION_CODE).not.toMatch(/\bexport\b/);
-    expect(net.NETLIFY_RELAY_FUNCTION_CODE).toContain("exports.handler");
+    expect(net.netlifyRelayFunctionCode).not.toMatch(/\bexport\b/);
+    expect(net.netlifyRelayFunctionCode).toContain("exports.handler");
 
     const runHandler = (fakeFetch, event) => {
       const sandboxExports = {};
-      new Function("exports", "fetch", "Buffer", net.NETLIFY_RELAY_FUNCTION_CODE)(
+      new Function("exports", "fetch", "Buffer", net.netlifyRelayFunctionCode)(
         sandboxExports, fakeFetch, Buffer
       );
       return sandboxExports.handler(event);
@@ -122,7 +122,7 @@ describe("netlifyRelay helpers", () => {
     expect(content.length).toBe(size);
     // CRC32 in header matches recomputation over the stored content.
     expect(view.getUint32(14, true)).toBe(net.crc32(content));
-    expect(Buffer.from(content).toString("utf8")).toBe(net.NETLIFY_RELAY_FUNCTION_CODE);
+    expect(Buffer.from(content).toString("utf8")).toBe(net.netlifyRelayFunctionCode);
   });
 
   it("pollDeployReady resolves on ready and throws on error/timeout", async () => {

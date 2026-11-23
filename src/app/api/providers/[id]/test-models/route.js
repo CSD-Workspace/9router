@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { getProviderConnectionById } from "@/lib/localDb";
+import { getProviderConnectionById, getSettings, getProviderNodes } from "@/lib/localDb";
 import { getProviderModels, PROVIDER_ID_TO_ALIAS } from "open-sse/config/providerModels.js";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 import { UPDATER_CONFIG } from "@/shared/constants/config";
 import { pingModelByKind } from "@/app/api/models/test/ping";
+import { lookupCustomHeaders } from "@/lib/providers/customHeaders.js";
 
 /**
  * POST /api/providers/[id]/test-models
@@ -41,17 +42,26 @@ export async function POST(request, { params }) {
       return NextResponse.json({ error: "No models configured for this provider" }, { status: 400 });
     }
 
+    const settings = await getSettings().catch(() => ({}));
+    const overrides = settings?.providerOverrides || {};
+    const nodes = await getProviderNodes().catch(() => []);
+    const providerUserHeaders = lookupCustomHeaders(overrides, {
+      provider: providerId,
+      connectionId: id,
+      providerNodes: nodes,
+    });
+
     // Warm up with first model to trigger token refresh (if needed) before parallel calls.
     // This prevents race condition where multiple requests concurrently refresh the same token.
     const [first, ...rest] = models;
     const firstKind = first.kind || first.type || "llm";
-    const firstResult = await pingModelByKind(`${alias}/${first.id}`, firstKind, baseUrl);
+    const firstResult = await pingModelByKind(`${alias}/${first.id}`, firstKind, baseUrl, providerUserHeaders);
     const results = [{ modelId: first.id, name: first.name || first.id, ...firstResult }];
 
     if (rest.length > 0) {
       const restResults = await Promise.all(
         rest.map(async (model) => {
-          const result = await pingModelByKind(`${alias}/${model.id}`, model.kind || model.type || "llm", baseUrl);
+          const result = await pingModelByKind(`${alias}/${model.id}`, model.kind || model.type || "llm", baseUrl, providerUserHeaders);
           return { modelId: model.id, name: model.name || model.id, ...result };
         })
       );

@@ -8,9 +8,10 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getProviderNodes } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
+import { lookupCustomHeaders, applyCaseInsensitiveHeaders } from "@/lib/providers/customHeaders.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
@@ -26,6 +27,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { resolveProviderAlias } from "open-sse/services/model.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 
@@ -46,11 +48,21 @@ export async function handleChat(request, clientRawRequest = null) {
   // Build clientRawRequest for logging (if not provided)
   if (!clientRawRequest) {
     const url = new URL(request.url);
+    const baseId = request.headers.get("x-request-id") || request.headers.get("x-client-request-id");
+    const requestId = baseId
+      ? `${baseId}-${Math.random().toString(36).slice(2, 7)}`
+      : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
     clientRawRequest = {
       endpoint: url.pathname,
       body,
-      headers: Object.fromEntries(request.headers.entries())
+      headers: Object.fromEntries(request.headers.entries()),
+      requestId,
     };
+  } else if (!clientRawRequest.requestId) {
+    const baseId = clientRawRequest.headers?.["x-request-id"] || clientRawRequest.headers?.["x-client-request-id"];
+    clientRawRequest.requestId = baseId
+      ? `${baseId}-${Math.random().toString(36).slice(2, 7)}`
+      : `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
   }
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.
@@ -76,14 +88,18 @@ export async function handleChat(request, clientRawRequest = null) {
   // Enforce API key if enabled in settings
   const settings = await getSettings();
   if (settings.requireApiKey) {
-    if (!apiKey) {
-      log.warn("AUTH", "Missing API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
-    }
-    const valid = await isValidApiKey(apiKey);
-    if (!valid) {
-      log.warn("AUTH", "Invalid API key (requireApiKey=true)");
-      return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+    const { hasValidCliToken } = await import("@/dashboardGuard.js");
+    const isInternalCli = await hasValidCliToken(request);
+    if (!isInternalCli) {
+      if (!apiKey) {
+        log.warn("AUTH", "Missing API key (requireApiKey=true)");
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Missing API key");
+      }
+      const valid = await isValidApiKey(apiKey);
+      if (!valid) {
+        log.warn("AUTH", "Invalid API key (requireApiKey=true)");
+        return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
+      }
     }
   }
 
@@ -270,6 +286,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Extract userAgent from request
   const userAgent = request?.headers?.get("user-agent") || "";
 
+  // Check if this is an internal test (e.g. from pingModelByKind)
+  const isInternalTest = !!request?.headers?.get?.("x-9r-cli-token");
+
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set();
   let lastError = null;
@@ -277,7 +296,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   let lastHeaders = null;
 
   while (true) {
-    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { requestedModel: requestedModel || model });
+    const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, {
+      requestedModel: requestedModel || model,
+      ignoreModelLock: isInternalTest,
+    });
 
     // All accounts unavailable
     if (!credentials || credentials.allRateLimited) {
@@ -310,7 +332,38 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
     // Use shared chatCore
     const chatSettings = await getSettings();
+    const providerNodes = await getProviderNodes().catch(() => []);
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
+
+    // Per-provider user overrides (custom headers / connect timeout) from settings
+    const providerOverrides = (() => {
+      const overridesMap = chatSettings.providerOverrides || {};
+      const baseHeaders = lookupCustomHeaders(overridesMap, {
+        provider,
+        model: modelStr,
+        connectionId: credentials?.connectionId,
+        providerNodes,
+      });
+
+      let effectiveOverrideHeaders = { ...baseHeaders };
+      const customHeaderStr = request?.headers?.get?.("x-9r-custom-headers");
+      if (customHeaderStr) {
+        try {
+          const parsed = JSON.parse(customHeaderStr);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            applyCaseInsensitiveHeaders(effectiveOverrideHeaders, parsed);
+          }
+        } catch {}
+      }
+      return {
+        headers: effectiveOverrideHeaders,
+      };
+    })();
+
+    // Custom headers override user-agent if provided
+    const customUa = Object.entries(providerOverrides.headers || {}).find(([k]) => k.toLowerCase() === "user-agent")?.[1];
+    const effectiveUserAgent = customUa || userAgent;
+
     const result = await handleChatCore({
       body: { ...body, model: `${provider}/${model}` },
       modelInfo: { provider, model },
@@ -318,7 +371,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log,
       clientRawRequest,
       connectionId: credentials.connectionId,
-      userAgent,
+      userAgent: effectiveUserAgent,
       apiKey,
       ccFilterNaming: !!chatSettings.ccFilterNaming,
       rtkEnabled: !!chatSettings.rtkEnabled,
@@ -340,8 +393,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       pxpipeTransform: chatSettings.pxpipeEnabled ? await getPxpipeTransform() : null,
       onPxpipeEvent: appendPxpipeEvent,
       providerThinking,
-      // Per-provider user overrides (custom headers / connect timeout) from settings
-      providerOverrides: (chatSettings.providerOverrides || {})[provider] || null,
+      providerOverrides,
       // Detect source format by endpoint + body
       sourceFormatOverride: request?.url ? detectFormatByEndpoint(new URL(request.url).pathname, body) : null,
       onCredentialsRefreshed: async (newCreds) => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, useCallback, useRef } from "react";
+import React, { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import PropTypes from "prop-types";
 import {
   ReactFlow,
@@ -16,11 +16,6 @@ import { getProviderIconSrc, markProviderIconMissing } from "@/shared/utils/prov
 
 // Force-stop FE animation if a provider stays active longer than this
 const FE_ACTIVE_TIMEOUT_MS = 60000;
-const FE_ACTIVE_TICK_MS = 1000;
-
-// Kame + electric particles along active edges
-const KAME_PARTICLE_COUNT = 6;
-const SPARK_COUNT = 5;
 
 function getProviderConfig(providerId) {
   return AI_PROVIDERS[providerId] || { color: "#6b7280", name: providerId };
@@ -31,7 +26,7 @@ function getProviderImageUrl(providerId) {
 }
 
 // Custom provider node - rectangle with image + name
-function ProviderNode({ data }) {
+const ProviderNode = React.memo(function ProviderNode({ data }) {
   const { label, color, imageUrl, textIcon, active } = data;
   const [imgError, setImgError] = useState(false);
   return (
@@ -88,15 +83,16 @@ function ProviderNode({ data }) {
       )}
     </div>
   );
-}
+});
 
 ProviderNode.propTypes = {
   data: PropTypes.object.isRequired,
 };
 
 // Center 9Router node — pulse/glow on card only (no expanding rings)
-function RouterNode({ data }) {
-  const powering = (data.activeCount || 0) > 0;
+const RouterNode = React.memo(function RouterNode({ data }) {
+  const activeCount = data.activeCount || 0;
+  const powering = activeCount > 0;
   return (
     <div
       className={`relative z-[1] flex items-center justify-center px-5 py-3 rounded-xl border-2 min-w-[130px] ${
@@ -120,21 +116,19 @@ function RouterNode({ data }) {
       <span className={`text-sm font-bold ${powering ? "topology-router-label text-yellow-300" : "text-primary"}`}>
         9Router
       </span>
-      {data.activeCount > 0 && (
-        <span className="ml-2 px-1.5 py-0.5 rounded-full bg-yellow-400 text-black text-xs font-bold topology-router-badge">
-          {data.activeCount}
-        </span>
-      )}
+      <span className="ml-2 px-1.5 py-0.5 rounded-full bg-yellow-400 text-black text-xs font-bold topology-router-badge">
+        {activeCount}
+      </span>
     </div>
   );
-}
+});
 
 RouterNode.propTypes = {
   data: PropTypes.object.isRequired,
 };
 
-// Active: electric kame beam (multi-layer stroke + sparks). Idle/last/error: solid BaseEdge.
-function TopologyEdge({
+// Active: GPU-accelerated glowing kame beam with traveling energy orbs
+const TopologyEdge = React.memo(function TopologyEdge({
   id,
   sourceX,
   sourceY,
@@ -155,7 +149,6 @@ function TopologyEdge({
   });
   const active = !!data?.active;
   const stroke = style.stroke || "var(--color-border)";
-  const filterId = `topo-electric-${id}`;
 
   if (!active) {
     return <BaseEdge id={id} path={edgePath} style={{ ...style, stroke }} />;
@@ -163,86 +156,47 @@ function TopologyEdge({
 
   return (
     <g className="topology-edge-electric">
-      <defs>
-        <filter id={filterId} x="-40%" y="-40%" width="180%" height="180%">
-          <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="2" result="noise">
-            <animate attributeName="baseFrequency" values="0.8;1.4;0.8" dur="0.25s" repeatCount="indefinite" />
-          </feTurbulence>
-          <feDisplacementMap in="SourceGraphic" in2="noise" scale="3.5" xChannelSelector="R" yChannelSelector="G" />
-        </filter>
-      </defs>
-      {/* Outer electric halo */}
+      {/* Outer cyan halo with hardware-accelerated CSS drop-shadow */}
       <path
         d={edgePath}
         fill="none"
         stroke="#22d3ee"
-        strokeWidth={10}
-        strokeOpacity={0.35}
+        strokeWidth={8}
+        strokeOpacity={0.4}
         strokeLinecap="round"
-        filter={`url(#${filterId})`}
+        style={{ filter: "drop-shadow(0 0 6px #22d3ee)" }}
         className="topology-edge-halo"
       />
-      {/* Mid plasma */}
+      {/* Mid plasma line */}
       <path
         d={edgePath}
         fill="none"
         stroke="#4ade80"
-        strokeWidth={5}
+        strokeWidth={4}
         strokeOpacity={0.85}
         strokeLinecap="round"
-        filter={`url(#${filterId})`}
         className="topology-edge-plasma"
       />
       {/* Hot white core */}
       <BaseEdge
         id={id}
         path={edgePath}
-        style={{ stroke: "#f8fafc", strokeWidth: 2.2, opacity: 1 }}
+        style={{ stroke: "#ffffff", strokeWidth: 1.8, opacity: 1 }}
         className="topology-edge-kame"
       />
-      {/* Energy orbs */}
-      {Array.from({ length: KAME_PARTICLE_COUNT }, (_, i) => (
-        <circle
-          key={`${id}-p-${i}`}
-          r={i % 2 === 0 ? 4 : 2.5}
-          fill={i % 3 === 0 ? "#fde047" : i % 3 === 1 ? "#67e8f9" : "#fff"}
-          opacity={0.95}
-          style={{ filter: "drop-shadow(0 0 4px #22d3ee)" }}
-        >
-          <animateMotion
-            dur={`${0.4 + i * 0.08}s`}
-            repeatCount="indefinite"
-            path={edgePath}
-            begin={`${i * 0.09}s`}
-          />
-        </circle>
-      ))}
-      {/* Electric sparks (short-lived blink along path) */}
-      {Array.from({ length: SPARK_COUNT }, (_, i) => (
-        <circle
-          key={`${id}-s-${i}`}
-          r={1.8}
-          fill="#e0f2fe"
-          opacity={0}
-        >
-          <animate
-            attributeName="opacity"
-            values="0;1;0;0;1;0"
-            dur={`${0.35 + (i % 3) * 0.1}s`}
-            begin={`${i * 0.07}s`}
-            repeatCount="indefinite"
-          />
-          <animateMotion
-            dur={`${0.28 + i * 0.05}s`}
-            repeatCount="indefinite"
-            path={edgePath}
-            begin={`${i * 0.11}s`}
-          />
-        </circle>
-      ))}
+      {/* Sleek traveling energy orbs */}
+      <circle r={3.5} fill="#fde047" opacity={0.95} style={{ filter: "drop-shadow(0 0 4px #22d3ee)" }}>
+        <animateMotion dur="0.8s" repeatCount="indefinite" path={edgePath} begin="0s" />
+      </circle>
+      <circle r={3} fill="#67e8f9" opacity={0.95} style={{ filter: "drop-shadow(0 0 4px #22d3ee)" }}>
+        <animateMotion dur="0.8s" repeatCount="indefinite" path={edgePath} begin="0.27s" />
+      </circle>
+      <circle r={2.5} fill="#ffffff" opacity={0.95} style={{ filter: "drop-shadow(0 0 4px #22d3ee)" }}>
+        <animateMotion dur="0.8s" repeatCount="indefinite" path={edgePath} begin="0.54s" />
+      </circle>
     </g>
   );
-}
+});
 
 TopologyEdge.propTypes = {
   id: PropTypes.string,
@@ -259,8 +213,19 @@ TopologyEdge.propTypes = {
 const nodeTypes = { provider: ProviderNode, router: RouterNode };
 const edgeTypes = { topology: TopologyEdge };
 
+function isProviderMatched(p, tokenSet) {
+  if (!tokenSet || tokenSet.size === 0) return false;
+  const candidates = [
+    p.provider?.toLowerCase(),
+    p.id?.toLowerCase(),
+    p.nodeName?.toLowerCase(),
+    p.prefix?.toLowerCase(),
+  ].filter(Boolean);
+  return candidates.some((c) => tokenSet.has(c));
+}
+
 // Place N nodes evenly along an ellipse around the router center.
-function buildLayout(providers, activeSet, lastSet, errorSet) {
+function buildLayout(providers, activeSet, lastSet, errorSet, activeCount = 0) {
   const nodeW = 180;
   const nodeH = 30;
   const routerW = 120;
@@ -275,7 +240,7 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
   const ry = Math.max(200, rx * 0.55); // ellipse ratio ~0.55
   if (count === 0) {
     return {
-      nodes: [{ id: "router", type: "router", position: { x: 0, y: 0 }, data: { activeCount: 0 }, draggable: false }],
+      nodes: [{ id: "router", type: "router", position: { x: 0, y: 0 }, data: { activeCount }, draggable: false }],
       edges: [],
     };
   }
@@ -287,7 +252,7 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
     id: "router",
     type: "router",
     position: { x: -routerW / 2, y: -routerH / 2 },
-    data: { activeCount: activeSet.size },
+    data: { activeCount },
     draggable: false,
   });
 
@@ -300,10 +265,10 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
 
   providers.forEach((p, i) => {
     const config = getProviderConfig(p.provider);
-    const active = activeSet.has(p.provider?.toLowerCase());
-    const last = !active && lastSet.has(p.provider?.toLowerCase());
-    const error = !active && errorSet.has(p.provider?.toLowerCase());
-    const nodeId = `provider-${p.provider}`;
+    const active = isProviderMatched(p, activeSet);
+    const last = !active && isProviderMatched(p, lastSet);
+    const error = !active && isProviderMatched(p, errorSet);
+    const nodeId = `provider-${p.provider || p.id}`;
     const data = {
       label: (config.name !== p.provider ? config.name : null) || p.nodeName || p.name || p.provider,
       color: config.color || "#6b7280",
@@ -344,7 +309,6 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
       sourceHandle,
       target: nodeId,
       targetHandle,
-      // Built-in animated uses stroke-dasharray (CPU-heavy); use particle beam instead
       animated: false,
       data: { active },
       style: edgeStyle(active, last, error),
@@ -354,22 +318,28 @@ function buildLayout(providers, activeSet, lastSet, errorSet) {
   return { nodes, edges };
 }
 
-export default function ProviderTopology({ providers = [], activeRequests = [], lastProvider = "", errorProvider = "" }) {
-  // Serialize to stable string keys so useMemo only re-runs when values actually change
-  const activeKey = useMemo(
-    () => activeRequests.map((r) => r.provider?.toLowerCase()).filter(Boolean).sort().join(","),
-    [activeRequests]
-  );
-  const lastKey = lastProvider?.toLowerCase() || "";
-  const errorKey = errorProvider?.toLowerCase() || "";
+export default function ProviderTopology({ providers = [], activeRequests = [], activeRequestCount, lastProvider = "", errorProvider = "" }) {
+  const totalActiveCount = typeof activeRequestCount === "number"
+    ? activeRequestCount
+    : (Array.isArray(activeRequests) ? activeRequests.length : 0);
 
-  const rawActiveSet = useMemo(() => new Set(activeKey ? activeKey.split(",") : []), [activeKey]);
-  const lastSet = useMemo(() => new Set(lastKey ? [lastKey] : []), [lastKey]);
-  const errorSet = useMemo(() => new Set(errorKey ? [errorKey] : []), [errorKey]);
+  // Collect all active tokens from activeRequests: provider, connectionId (do not match account/connection display name)
+  const rawActiveSet = useMemo(() => {
+    const set = new Set();
+    if (Array.isArray(activeRequests)) {
+      for (const r of activeRequests) {
+        if (r.provider) set.add(r.provider.toLowerCase());
+        if (r.connectionId) set.add(r.connectionId.toLowerCase());
+      }
+    }
+    return set;
+  }, [activeRequests]);
 
-  // Track firstSeen per active provider; drop provider if running too long (BE stuck)
+  const lastSet = useMemo(() => new Set(lastProvider ? [lastProvider.toLowerCase()] : []), [lastProvider]);
+  const errorSet = useMemo(() => new Set(errorProvider ? [errorProvider.toLowerCase()] : []), [errorProvider]);
+
+  // Track firstSeen per active provider token; drop token if running too long (safety fallback)
   const firstSeenRef = useRef({});
-  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     const seen = firstSeenRef.current;
@@ -382,12 +352,6 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
     }
   }, [rawActiveSet]);
 
-  useEffect(() => {
-    if (rawActiveSet.size === 0) return;
-    const id = setInterval(() => setTick((t) => t + 1), FE_ACTIVE_TICK_MS);
-    return () => clearInterval(id);
-  }, [rawActiveSet]);
-
   const activeSet = useMemo(() => {
     const now = Date.now();
     const filtered = new Set();
@@ -396,16 +360,16 @@ export default function ProviderTopology({ providers = [], activeRequests = [], 
       if (!ts || now - ts < FE_ACTIVE_TIMEOUT_MS) filtered.add(p);
     }
     return filtered;
-  }, [rawActiveSet, tick]);
+  }, [rawActiveSet]);
 
   const { nodes, edges } = useMemo(
-    () => buildLayout(providers, activeSet, lastSet, errorSet),
-    [providers, activeSet, lastSet, errorSet]
+    () => buildLayout(providers, activeSet, lastSet, errorSet, totalActiveCount),
+    [providers, activeSet, lastSet, errorSet, totalActiveCount]
   );
 
   // Stable key — only remount when provider list changes
   const providersKey = useMemo(
-    () => providers.map((p) => p.provider).sort().join(","),
+    () => providers.map((p) => p.provider || p.id).sort().join(","),
     [providers]
   );
 
@@ -478,10 +442,12 @@ ProviderTopology.propTypes = {
     name: PropTypes.string,
   })),
   activeRequests: PropTypes.arrayOf(PropTypes.shape({
+    requestId: PropTypes.string,
     provider: PropTypes.string,
     model: PropTypes.string,
     account: PropTypes.string,
   })),
+  activeRequestCount: PropTypes.number,
   lastProvider: PropTypes.string,
   errorProvider: PropTypes.string,
 };

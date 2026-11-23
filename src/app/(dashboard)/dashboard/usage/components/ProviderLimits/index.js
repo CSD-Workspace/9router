@@ -125,7 +125,12 @@ function claudeGrantStatus(grant) {
   return grant.useRequiresLimit ? "at limit only" : "unavailable";
 }
 
-function providerLabel(providerId) {
+let moduleProviderNames = {};
+
+function providerLabel(providerId, conn = null) {
+  if (conn?.providerName) return conn.providerName;
+  if (conn?.providerSpecificData?.nodeName) return conn.providerSpecificData.nodeName;
+  if (moduleProviderNames[providerId]) return moduleProviderNames[providerId];
   return AI_PROVIDERS[providerId]?.name || providerId;
 }
 
@@ -159,6 +164,7 @@ export default function ProviderLimits() {
   const router = useRouter();
   const pathname = usePathname();
   const [connections, setConnections] = useState([]);
+  const [providerNames, setProviderNames] = useState({});
   const [quotaData, setQuotaData] = useState({});
   const [loading, setLoading] = useState({});
   const [errors, setErrors] = useState({});
@@ -248,6 +254,11 @@ export default function ProviderLimits() {
         const connectionList = data.connections || [];
         const nextPagination = getSafePagination(data.pagination, pageSize);
         const nextTotals = getSafeTotals(data.totals, connectionList.length);
+
+        if (data.providerNames) {
+          moduleProviderNames = { ...moduleProviderNames, ...data.providerNames };
+          setProviderNames((prev) => ({ ...prev, ...data.providerNames }));
+        }
 
         setConnections(connectionList);
         setProviderOptions(getProviderOptions(data.providerOptions));
@@ -973,10 +984,10 @@ export default function ProviderLimits() {
                       >
                         <ProviderIcon
                           src={`/providers/${provider}.png`}
-                          alt={provider}
+                          alt={providerLabel(provider)}
                           size={24}
                           className="size-6 rounded-md object-contain"
-                          fallbackText={provider.slice(0, 2).toUpperCase()}
+                          fallbackText={(providerLabel(provider) || provider).slice(0, 2).toUpperCase()}
                         />
                         <span className="font-medium">
                           {providerLabel(provider)}
@@ -1145,17 +1156,17 @@ export default function ProviderLimits() {
                     <div className="w-8 h-8 shrink-0 rounded-md flex items-center justify-center overflow-hidden">
                       <ProviderIcon
                         src={`/providers/${conn.provider}.png`}
-                        alt={conn.provider}
+                        alt={providerLabel(conn.provider, conn)}
                         size={32}
                         className="object-contain"
                         fallbackText={
-                          conn.provider?.slice(0, 2).toUpperCase() || "PR"
+                          (providerLabel(conn.provider, conn) || conn.provider)?.slice(0, 2).toUpperCase() || "PR"
                         }
                       />
                     </div>
                     <div className="min-w-0">
                       <h3 className="text-sm font-semibold text-text-primary truncate">
-                        {providerLabel(conn.provider)}
+                        {providerLabel(conn.provider, conn)}
                       </h3>
                       {getConnectionLabel(conn) ? (
                         <p className="text-xs text-text-muted truncate">
@@ -1389,24 +1400,64 @@ export default function ProviderLimits() {
                     {quota.message}
                   </p>
                 )}
-                {hiddenQuotaRows.length > 0 && (
-                  <div className="mt-2 flex min-w-0 items-center gap-1 border-t border-black/5 pt-2 text-[10px] text-text-muted dark:border-white/5">
-                    <span className="material-symbols-outlined shrink-0 text-[14px]">
-                      visibility_off
+                {/* When all quotas are hidden */}
+                {visibleQuotas.length === 0 && hiddenQuotaRows.length > 0 && !isLoading && !error && !quota?.message && (
+                  <div className="my-2 flex flex-col items-center justify-center gap-2.5 rounded-lg border border-dashed border-black/10 bg-black/[0.02] px-3 py-3.5 text-center dark:border-white/10 dark:bg-white/[0.02]">
+                    <div className="flex items-center gap-1.5 text-xs text-text-muted">
+                      <span className="material-symbols-outlined text-[15px] opacity-70">
+                        visibility_off
+                      </span>
+                      <span>All quotas hidden ({hiddenQuotaRows.length})</span>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-1.5">
+                      {hiddenQuotaRows.map((quotaRow) => {
+                        const cleanName = (quotaRow.name || "Quota").replace(/\s*\(USD\)/i, "");
+                        return (
+                          <button
+                            key={getQuotaVisibilityKey(quotaRow)}
+                            type="button"
+                            onClick={() => handleShowQuota(conn.provider, quotaRow)}
+                            className="group inline-flex items-center gap-1.5 rounded-md border border-black/10 bg-black/5 px-2.5 py-1 text-xs font-medium text-text-primary shadow-2xs transition-all hover:border-primary/40 hover:bg-primary/10 hover:text-primary dark:border-white/10 dark:bg-white/[0.08]"
+                            title="Click to restore this quota"
+                          >
+                            <span className="material-symbols-outlined text-[14px] text-text-muted transition-colors group-hover:text-primary">
+                              visibility
+                            </span>
+                            <span>{cleanName}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* When some quotas are visible and some are hidden */}
+                {visibleQuotas.length > 0 && hiddenQuotaRows.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-black/5 pt-2 text-xs dark:border-white/5">
+                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium text-text-muted">
+                      <span className="material-symbols-outlined text-[14px] opacity-70">
+                        visibility_off
+                      </span>
+                      <span>Hidden:</span>
                     </span>
-                    <span className="shrink-0">Hidden:</span>
-                    <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap pb-2">
-                      {hiddenQuotaRows.map((quotaRow) => (
-                        <button
-                          key={getQuotaVisibilityKey(quotaRow)}
-                          type="button"
-                          onClick={() => handleShowQuota(conn.provider, quotaRow)}
-                          className="shrink-0 rounded-md border border-black/10 px-1.5 py-0.5 transition-colors hover:bg-black/5 hover:text-text-primary dark:border-white/10 dark:hover:bg-white/5"
-                          title="Show this quota row"
-                        >
-                          {quotaRow.name}
-                        </button>
-                      ))}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {hiddenQuotaRows.map((quotaRow) => {
+                        const cleanName = (quotaRow.name || "Quota").replace(/\s*\(USD\)/i, "");
+                        return (
+                          <button
+                            key={getQuotaVisibilityKey(quotaRow)}
+                            type="button"
+                            onClick={() => handleShowQuota(conn.provider, quotaRow)}
+                            className="group inline-flex items-center gap-1 rounded-md border border-black/10 bg-black/5 px-2 py-0.5 text-[11px] font-medium text-text-muted shadow-2xs transition-all hover:border-primary/40 hover:bg-primary/10 hover:text-primary dark:border-white/10 dark:bg-white/[0.07]"
+                            title="Click to restore this quota"
+                          >
+                            <span className="material-symbols-outlined text-[13px] text-text-muted/60 transition-colors group-hover:text-primary">
+                              visibility
+                            </span>
+                            <span>{cleanName}</span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}

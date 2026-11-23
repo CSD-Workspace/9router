@@ -65,6 +65,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
           connectionProxyUrl: resolvedProxy.connectionProxyUrl,
           connectionNoProxy: resolvedProxy.connectionNoProxy,
           connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
+          connectionProxyPoolName: resolvedProxy.proxyPool?.name || null,
           vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
           strictProxy: resolvedProxy.strictProxy === true,
         },
@@ -86,7 +87,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     // Filter out model-locked, excluded, and Antigravity quota-exhausted connections.
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
-      if (isModelLockActive(c, model)) return false;
+      if (!options?.ignoreModelLock && isModelLockActive(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
       // Antigravity: skip if live quota exhausted for this model
@@ -219,6 +220,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         connectionProxyUrl: resolvedProxy.connectionProxyUrl,
         connectionNoProxy: resolvedProxy.connectionNoProxy,
         connectionProxyPoolId: resolvedProxy.proxyPoolId || null,
+        connectionProxyPoolName: resolvedProxy.proxyPool?.name || null,
         vercelRelayUrl: resolvedProxy.vercelRelayUrl || "",
         strictProxy: resolvedProxy.strictProxy === true,
       },

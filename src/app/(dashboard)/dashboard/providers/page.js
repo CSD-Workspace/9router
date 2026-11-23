@@ -95,6 +95,7 @@ function getConnectionErrorTag(connection) {
 }
 
 const APIKEY_INITIAL_VISIBLE = 20;
+const STATUS_FILTER_STORAGE_KEY = "9router.providers.statusFilter";
 
 export default function ProvidersPage() {
   const [connections, setConnections] = useState([]);
@@ -106,7 +107,23 @@ export default function ProvidersPage() {
     useState(false);
   const [testingMode, setTestingMode] = useState(null);
   const [testResults, setTestResults] = useState(null);
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState(() => {
+    if (typeof window === "undefined") return "all";
+  
+    const saved = localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
+  
+    return STATUS_FILTER_OPTIONS.some(
+      (option) => option.value === saved,
+    )
+      ? saved
+      : "all";
+  });
+  useEffect(() => {
+    localStorage.setItem(
+      STATUS_FILTER_STORAGE_KEY,
+      statusFilter,
+    );
+  }, [statusFilter]);
   const notify = useNotificationStore();
   const searchQuery = useHeaderSearchStore((s) => s.query);
   const registerSearch = useHeaderSearchStore((s) => s.register);

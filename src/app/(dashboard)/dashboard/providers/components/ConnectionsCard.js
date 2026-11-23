@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
+import { randomProxyPool } from "@/lib/network/connectionProxyConstants.js";
 import PropTypes from "prop-types";
 import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
 import WebLoginButton from "./WebLoginButton";
@@ -39,14 +40,17 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
 
   const proxyPoolMap = new Map((proxyPools || []).map((p) => [p.id, p]));
   const boundProxyPoolId = connection.providerSpecificData?.proxyPoolId || null;
-  const boundProxyPool = boundProxyPoolId ? proxyPoolMap.get(boundProxyPoolId) : null;
+  const isRandomProxy = boundProxyPoolId === randomProxyPool;
+  const boundProxyPool = boundProxyPoolId && !isRandomProxy ? proxyPoolMap.get(boundProxyPoolId) : null;
   const hasLegacyProxy = connection.providerSpecificData?.connectionProxyEnabled === true && !!connection.providerSpecificData?.connectionProxyUrl;
   const hasAnyProxy = !!boundProxyPoolId || hasLegacyProxy;
 
-  const proxyDisplayText = boundProxyPool
-    ? `Pool: ${boundProxyPool.name}`
-    : boundProxyPoolId ? `Pool: ${boundProxyPoolId} (inactive/missing)`
-    : hasLegacyProxy ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}` : "";
+  const proxyDisplayText = isRandomProxy
+    ? "Pool: Random (any active pool)"
+    : boundProxyPool
+      ? `Pool: ${boundProxyPool.name}`
+      : boundProxyPoolId ? `Pool: ${boundProxyPoolId} (inactive/missing)`
+        : hasLegacyProxy ? `Legacy: ${connection.providerSpecificData?.connectionProxyUrl}` : "";
 
   let maskedProxyUrl = "";
   const rawProxyUrl = boundProxyPool?.proxyUrl || connection.providerSpecificData?.connectionProxyUrl;
@@ -58,7 +62,12 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   }
 
   const noProxyText = boundProxyPool?.noProxy || connection.providerSpecificData?.connectionNoProxy || "";
-  const proxyBadgeVariant = boundProxyPool?.isActive === true ? "success" : (boundProxyPoolId || hasLegacyProxy) ? "error" : "default";
+  // Random has no single pool to read state from; it is healthy while at least
+  // one usable pool exists to draw from.
+  const hasUsablePool = (proxyPools || []).some((p) => p.isActive === true && p.proxyUrl);
+  const proxyBadgeVariant = isRandomProxy
+    ? (hasUsablePool ? "success" : "error")
+    : boundProxyPool?.isActive === true ? "success" : (boundProxyPoolId || hasLegacyProxy) ? "error" : "default";
 
   const modelLockUntil = Object.entries(connection)
     .filter(([k]) => k.startsWith("modelLock_"))
@@ -149,6 +158,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
               {showProxyDropdown && (
                 <div className="absolute right-0 top-full mt-1 z-50 bg-bg border border-border rounded-lg shadow-lg py-1 min-w-[160px]">
                   <button onClick={() => handleSelectProxy("__none__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}>None</button>
+                  <button onClick={() => handleSelectProxy(randomProxyPool)} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${isRandomProxy ? "text-primary font-medium" : "text-text-main"}`}>Random</button>
                   {(proxyPools || []).map((pool) => (
                     <button key={pool.id} onClick={() => handleSelectProxy(pool.id)} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${boundProxyPoolId === pool.id ? "text-primary font-medium" : "text-text-main"}`}>{pool.name}</button>
                   ))}

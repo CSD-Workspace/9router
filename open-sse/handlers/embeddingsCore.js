@@ -28,6 +28,7 @@ export async function handleEmbeddingsCore({
   modelInfo,
   credentials,
   log,
+  providerOverrides,
   onCredentialsRefreshed,
   onRequestSuccess,
 }) {
@@ -64,6 +65,9 @@ export async function handleEmbeddingsCore({
   try {
     url = adapter.buildUrl(model, credentials, ctx);
     headers = adapter.buildHeaders(credentials, ctx);
+    if (providerOverrides?.headers) {
+      Object.assign(headers, providerOverrides.headers);
+    }
     requestBody = adapter.buildBody(model, {
       input,
       encoding_format: body.encoding_format || "float",
@@ -113,6 +117,9 @@ export async function handleEmbeddingsCore({
 
       try {
         const retryHeaders = adapter.buildHeaders(credentials, ctx);
+        if (providerOverrides?.headers) {
+          Object.assign(retryHeaders, providerOverrides.headers);
+        }
         const retryUrl = adapter.buildUrl(model, credentials, ctx);
         providerResponse = await fetch(retryUrl, {
           method: "POST",
